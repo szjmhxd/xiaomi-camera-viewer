@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>摄像头回放台</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📹</text></svg>">
+</head>
+<body>
+
+<div class="app">
+
+  <aside class="side" id="side">
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <div class="brand-txt">
+        <b>回放台</b>
+        <span id="camName">读取中…</span>
+      </div>
+      <button class="icon-btn only-mobile" id="btnSideClose" title="收起">✕</button>
+    </div>
+
+    <div class="side-stat" id="sideStat"></div>
+
+    <div class="side-scroll">
+      <div class="side-title">录像日期</div>
+      <div class="days" id="days"></div>
+    </div>
+
+    <div class="side-foot">
+      <button class="ghost-btn" id="btnRefresh">重新扫描</button>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <header class="topbar">
+      <button class="icon-btn only-mobile" id="btnSideOpen" title="日期列表">☰</button>
+      <div class="day-title">
+        <h1 id="dayLabel">—</h1>
+        <span id="dayMeta"></span>
+      </div>
+      <div class="top-right">
+        <label class="jump">
+          <span>定位</span>
+          <input id="jumpTime" type="text" placeholder="16:20" autocomplete="off" spellcheck="false">
+        </label>
+        <button class="icon-btn" id="btnExport" title="导出为单个 mp4">⤓</button>
+      </div>
+    </header>
+
+    <section class="stage">
+      <div class="player" id="player">
+        <video id="video" playsinline preload="auto" muted></video>
+
+        <div class="player-msg" id="playerMsg">
+          <div class="spin" id="msgSpin"></div>
+          <p id="msgText">选择左侧日期开始回放</p>
+        </div>
+
+        <div class="player-badge" id="playerBadge"></div>
+        <div class="player-osd" id="osd"></div>
+      </div>
+    </section>
+
+    <section class="timeline-wrap">
+      <div class="tl-head">
+        <div class="tl-clock" id="tlClock">--:--:--</div>
+        <div class="tl-gap" id="tlGap"></div>
+      </div>
+
+      <div class="timeline" id="timeline">
+        <canvas id="tlCanvas"></canvas>
+        <div class="tl-cursor" id="tlCursor"></div>
+        <div class="tl-hover" id="tlHover"><span class="tl-hover-time"></span></div>
+      </div>
+
+      <div class="tl-scale" id="tlScale"></div>
+    </section>
+
+    <section class="controls">
+      <div class="ctrl-group">
+        <button class="icon-btn" id="btnPrev" title="上一段 (←)">⏮</button>
+        <button class="icon-btn" id="btnBack10" title="后退 10 秒 (J)">↺10</button>
+        <button class="play-btn" id="btnPlay" title="播放/暂停 (空格)">▶</button>
+        <button class="icon-btn" id="btnFwd10" title="前进 10 秒 (L)">10↻</button>
+        <button class="icon-btn" id="btnNext" title="下一段 (→)">⏭</button>
+      </div>
+
+      <div class="ctrl-group">
+        <button class="pill" id="btnRate" title="播放倍速 (1-9)">1×</button>
+        <button class="pill on" id="btnMute" title="声音 (M)">🔇</button>
+        <button class="pill" id="btnShot" title="截图存 PNG">截图</button>
+        <button class="pill" id="btnFull" title="全屏 (F)">全屏</button>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

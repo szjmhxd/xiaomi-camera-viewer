@@ -99,6 +99,130 @@ def free_bytes(path: Path) -> int:
         return -1
 
 
+# ---- 配置文件：记住上次打开的文件夹 ----
+
+def load_config(cache_dir: Path) -> dict:
+    try:
+        return json.loads((cache_dir / "config.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(cache_dir: Path, data: dict) -> None:
+    try:
+        (cache_dir / "config.json").write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+    except OSError:
+        pass
+
+
+# ---- 目录浏览（给网页里的"选择文件夹"用）----
+
+SKIP_DIRS = {
+    "$RECYCLE.BIN", "System Volume Information", "Config.Msi",
+    "Recovery", "Windows", "Program Files", "Program Files (x86)",
+    "ProgramData", "$WinREAgent", "node_modules", "__pycache__",
+}
+
+
+def list_drives() -> list[dict]:
+    """列出盘符。Windows 走 GetLogicalDrives 位掩码，比逐个 exists() 快得多，
+    也不会在掉线的映射盘上卡住。"""
+    out: list[dict] = []
+    if os.name == "nt":
+        try:
+            import ctypes
+            mask = ctypes.windll.kernel32.GetLogicalDrives()
+            for i, letter in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+                if not (mask >> i) & 1:
+                    continue
+                root = f"{letter}:\\"
+                dtype = ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(root))
+                out.append({
+                    "path": root,
+                    "name": f"{letter}:",
+                    # 2=可移动 3=本地 4=网络 5=光驱 6=RAM
+                    "kind": {2: "removable", 3: "local", 4: "network",
+                             5: "optical", 6: "ram"}.get(dtype, "other"),
+                })
+        except Exception:
+            for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+                if os.path.exists(f"{letter}:\\"):
+                    out.append({"path": f"{letter}:\\", "name": f"{letter}:", "kind": "other"})
+    else:
+        out.append({"path": "/", "name": "/", "kind": "local"})
+        home = str(Path.home())
+        out.append({"path": home, "name": "~", "kind": "local"})
+        for mnt in ("/mnt", "/media", "/Volumes"):
+            try:
+                for name in sorted(os.listdir(mnt)):
+                    p = os.path.join(mnt, name)
+                    if os.path.isdir(p):
+                        out.append({"path": p, "name": name, "kind": "local"})
+            except OSError:
+                pass
+    return out
+
+
+def parent_of(path: Path) -> str | None:
+    p = path.parent
+    return str(p) if str(p) != str(path) else None
+
+
+def list_subdirs(path: Path) -> list[dict]:
+    """只列子目录，不做递归统计——网络盘上逐个扫描子目录会慢到无法使用。
+    "含视频"标记共享一份 IO 预算，预算耗尽后不再探测（只是不显示标记，不影响使用）。"""
+    items = []
+    budget = [120]
+    with os.scandir(path) as it:
+        for e in it:
+            try:
+                if not e.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            if e.name.startswith(".") or e.name in SKIP_DIRS:
+                continue
+            has_video = _quick_has_mp4(e.path, 2, budget) if budget[0] > 0 else False
+            items.append({"name": e.name, "path": e.path, "video": has_video})
+    items.sort(key=lambda x: (not x["video"], x["name"].lower()))
+    return items
+
+
+def _quick_has_mp4(dirpath: str, depth: int = 3, budget: list | None = None) -> bool:
+    """在有限的 IO 预算内判断这个目录树里有没有 mp4。
+
+    米家是三层结构（根/摄像头ID/小时/*.mp4），所以至少要往下探三层；
+    同时用 budget 限制总 scandir 次数，避免在盘符根目录上扫全盘。
+    """
+    if budget is None:
+        budget = [24]
+    if depth < 0 or budget[0] <= 0:
+        return False
+    subdirs: list[str] = []
+    try:
+        with os.scandir(dirpath) as it:
+            for e in it:
+                budget[0] -= 1
+                if budget[0] <= 0:
+                    break
+                if e.name.lower().endswith(".mp4"):
+                    return True
+                try:
+                    if e.is_dir(follow_symlinks=False):
+                        subdirs.append(e.path)
+                except OSError:
+                    continue
+                if len(subdirs) >= 6:
+                    break
+    except OSError:
+        return False
+    for p in subdirs:
+        if _quick_has_mp4(p, depth - 1, budget):
+            return True
+    return False
+
+
 def parse_rel_time(text: str) -> int | None:
     """'16:20' / '16:20:13' -> 当天秒偏移。"""
     if not text:
@@ -126,10 +250,11 @@ def parse_rel_time(text: str) -> int | None:
 # --------------------------------------------------------------------------
 
 class Segment:
-    __slots__ = ("sid", "cam", "path", "start", "size", "dur", "day", "rel")
+    __slots__ = ("sid", "uid", "cam", "path", "start", "size", "dur", "day", "rel")
 
     def __init__(self, sid: str, cam: str, path: str, start: int, size: int, dur: float):
-        self.sid = sid
+        self.sid = sid            # 相对路径，用于接口定位
+        self.uid = os.path.normcase(path)   # 绝对路径，用于缓存键（换目录也不会撞）
         self.cam = cam
         self.path = path
         self.start = start
@@ -161,6 +286,7 @@ class Index:
         self.cams: list[str] = []
         self.skipped = 0
         self.scan_seconds = 0.0
+        self.progress = 0          # 已遍历的文件数，供前端显示扫描进度
         self._load_durations()
 
     @property
@@ -196,6 +322,7 @@ class Index:
         cams: set[str] = set()
         stack = [self.root]
         root_str = str(self.root)
+        self.progress = 0
 
         while stack:
             d = stack.pop()
@@ -206,6 +333,7 @@ class Index:
             with it:
                 for e in it:
                     try:
+                        self.progress += 1
                         if e.is_dir(follow_symlinks=False):
                             if e.name in (".git", "node_modules", "#recycle", "@eaDir"):
                                 continue
@@ -274,6 +402,7 @@ class Index:
                 "cameras": self.cams,
                 "skipped": self.skipped,
                 "scan_seconds": round(self.scan_seconds, 2),
+                "progress": self.progress,
                 "first": self.segs[0].start if self.segs else None,
                 "last": self.segs[-1].start if self.segs else None,
             }
@@ -386,21 +515,21 @@ class Encoder:
                 pass
 
     def schedule_cache(self, seg: Segment) -> None:
-        if self.max_bytes == 0 or self.is_cached(seg.sid):
+        if self.max_bytes == 0 or self.is_cached(seg.uid):
             return
         with self._lock:
-            if seg.sid in self._jobs:
+            if seg.uid in self._jobs:
                 return
             th = threading.Thread(target=self._bg, args=(seg,), daemon=True)
-            self._jobs[seg.sid] = th
+            self._jobs[seg.uid] = th
             th.start()
 
     def _bg(self, seg: Segment) -> None:
         try:
-            self.cache(seg.sid, seg.path)
+            self.cache(seg.uid, seg.path)
         finally:
             with self._lock:
-                self._jobs.pop(seg.sid, None)
+                self._jobs.pop(seg.uid, None)
 
     def thumb(self, src: str, sid: str, t: float) -> Path | None:
         out = self.thumb_path(sid, t)
@@ -449,11 +578,82 @@ class Encoder:
 # --------------------------------------------------------------------------
 
 class App:
-    def __init__(self, root: Path, cache_dir: Path, height, fps, crf, max_gb):
-        self.root = root
-        self.index = Index(root, cache_dir)
+    """运行期状态：当前打开的录像目录、索引、转码器。
+
+    目录可以在运行中切换，所以 index 允许为空（还没选目录）。
+    扫描在网络盘上要几十秒，放到后台线程跑，前端轮询 /api/scan。
+    """
+
+    def __init__(self, cache_dir: Path, height, fps, crf, max_gb, root: Path | None = None):
+        self.cache_dir = cache_dir
         self.encoder = Encoder(cache_dir, height, fps, crf, max_gb)
+        self.index: Index | None = None
+        self.root: Path | None = None
         self.started = time.time()
+        self._lock = threading.Lock()
+        self.scanning = False
+        self.scan_error = ""
+        cfg = load_config(cache_dir)
+        self.recent: list[str] = [p for p in cfg.get("recent", []) if isinstance(p, str)]
+        if root is not None:
+            self.set_root(root, wait=True)
+
+    # -- 切换目录 ---------------------------------------------------------
+    def set_root(self, path, wait: bool = False) -> dict:
+        target = Path(path).expanduser()
+        if not target.is_absolute():
+            target = Path.cwd() / target
+        # 不做 resolve()：映射盘会被解析成 \\\\host\\share 的 UNC 形式，显示难看，
+        # 而且同一个目录会出现两种写法，缓存键对不上。
+        target = Path(os.path.normpath(str(target)))
+        if not target.is_dir():
+            raise NotADirectoryError(str(target))
+
+        with self._lock:
+            if self.scanning:
+                raise RuntimeError("正在扫描上一个目录，请稍候")
+            self.root = target
+            self.index = Index(target, self.cache_dir)
+            self.scanning = True
+            self.scan_error = ""
+
+        idx = self.index
+
+        def work():
+            try:
+                idx.refresh()
+                self._remember(target)
+            except Exception as exc:
+                self.scan_error = f"{type(exc).__name__}: {exc}"
+            finally:
+                self.scanning = False
+
+        if wait:
+            work()
+        else:
+            threading.Thread(target=work, daemon=True, name="scan").start()
+        return {"root": str(target), "scanning": self.scanning}
+
+    def _remember(self, path: Path) -> None:
+        s = str(path)
+        self.recent = [s] + [p for p in self.recent if p.lower() != s.lower()]
+        self.recent = self.recent[:8]
+        cfg = load_config(self.cache_dir)
+        cfg["root"] = s
+        cfg["recent"] = self.recent
+        save_config(self.cache_dir, cfg)
+
+    # -- 状态 -------------------------------------------------------------
+    def status(self) -> dict:
+        idx = self.index
+        return {
+            "root": str(self.root) if self.root else None,
+            "name": self.root.name if self.root else None,
+            "scanning": self.scanning,
+            "error": self.scan_error,
+            "stats": idx.stats() if idx else None,
+            "recent": self.recent,
+        }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -544,7 +744,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static(path[8:])
             api = {
                 "/api/config": self._api_config,
-                "/api/days": lambda q: self._json(self.app.index.day_list()),
+                "/api/scan": self._api_scan,
+                "/api/days": self._api_days,
                 "/api/day": self._api_day,
                 "/api/status": self._api_status,
                 "/api/prepare": self._api_prepare,
@@ -553,6 +754,9 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/thumb": self._api_thumb,
                 "/api/export": self._api_export,
                 "/api/reindex": self._api_reindex,
+                "/api/fs/drives": self._api_fs_drives,
+                "/api/fs/list": self._api_fs_list,
+                "/api/fs/open": self._api_open,
             }.get(path)
             if api:
                 return api(q)
@@ -590,31 +794,96 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- API --------------------------------------------------------------
     def _api_config(self, q):
-        idx, enc = self.app.index, self.app.encoder
+        enc = self.app.encoder
+        st = self.app.status()
         self._json({
             "version": VERSION,
-            "root": str(self.app.root),
-            "stats": idx.stats(),
+            "root": st["root"],
+            "name": st["name"],
+            "scanning": st["scanning"],
+            "error": st["error"],
+            "stats": st["stats"] or {
+                "files": 0, "bytes": 0, "days": 0, "cameras": [],
+                "skipped": 0, "scan_seconds": 0, "first": None, "last": None,
+            },
+            "recent": st["recent"],
             "cache": enc.cache_stats(),
             "encoder": {"height": enc.height, "fps": enc.fps, "crf": enc.crf,
                         "ffmpeg": bool(FFMPEG)},
             "now": int(time.time()),
         })
 
+    def _api_scan(self, q):
+        self._json(self.app.status())
+
+    def _api_days(self, q):
+        idx = self.app.index
+        self._json(idx.day_list() if idx else [])
+
+    # -- 目录浏览 ---------------------------------------------------------
+    def _api_fs_drives(self, q):
+        self._json(list_drives())
+
+    def _api_fs_list(self, q):
+        raw = q.get("path", "")
+        if not raw:
+            return self._json({"path": "", "parent": None, "dirs": [], "root": True})
+        p = Path(raw)
+        if not p.is_dir():
+            return self._err(404, f"目录不存在或无权访问：{raw}")
+        try:
+            dirs = list_subdirs(p)
+        except OSError as exc:
+            return self._err(403, f"无法读取该目录：{exc.strerror or exc}")
+        self._json({"path": str(p), "parent": parent_of(p), "dirs": dirs, "root": False})
+
+    def _api_open(self, q):
+        """切换录像目录，扫描在后台跑，前端轮询 /api/scan。"""
+        raw = q.get("path", "").strip()
+        if not raw:
+            return self._err(400, "缺少 path 参数")
+        try:
+            res = self.app.set_root(raw, wait=False)
+        except NotADirectoryError:
+            return self._err(400, f"不是一个有效目录：{raw}")
+        except RuntimeError as exc:
+            return self._err(409, str(exc))
+        self._json({"ok": True, **res})
+
     def _api_reindex(self, q):
-        self.app.index.refresh()
-        self._json({"ok": True, **self.app.index.stats()})
+        if not self.app.root:
+            return self._err(400, "还没有选择录像目录")
+        try:
+            self.app.set_root(self.app.root, wait=False)
+        except RuntimeError as exc:
+            return self._err(409, str(exc))
+        self._json({"ok": True, "scanning": True})
+
+    def _seg(self, q):
+        """取片段：统一处理"还没选目录"和"片段不存在"。"""
+        idx = self.app.index
+        if not idx:
+            self._err(400, "还没有选择录像目录")
+            return None
+        seg = idx.get(q.get("id", ""))
+        if not seg:
+            self._err(404, "片段不存在")
+            return None
+        return seg
 
     def _api_day(self, q):
         day = q.get("date", "")
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
             return self._err(400, "date 需为 YYYY-MM-DD")
-        segs = self.app.index.day_segments(day)
+        idx = self.app.index
+        if not idx:
+            return self._json({"date": day, "count": 0, "seconds": 0, "segments": []})
+        segs = idx.day_segments(day)
         enc = self.app.encoder
         items = []
         for s in segs:
             d = s.api()
-            d["cached"] = enc.is_cached(s.sid)
+            d["cached"] = enc.is_cached(s.uid)
             items.append(d)
         self._json({
             "date": day,
@@ -624,47 +893,47 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _api_status(self, q):
-        seg = self.app.index.get(q.get("id", ""))
+        seg = self._seg(q)
         if not seg:
-            return self._err(404, "片段不存在")
-        self._json({"id": seg.sid, "cached": self.app.encoder.is_cached(seg.sid),
+            return
+        self._json({"id": seg.sid, "cached": self.app.encoder.is_cached(seg.uid),
                     "dur": seg.dur, "size": seg.size})
 
     def _api_prepare(self, q):
-        seg = self.app.index.get(q.get("id", ""))
+        seg = self._seg(q)
         if not seg:
-            return self._err(404, "片段不存在")
+            return
         self.app.encoder.schedule_cache(seg)
-        self._json({"queued": True, "cached": self.app.encoder.is_cached(seg.sid)})
+        self._json({"queued": True, "cached": self.app.encoder.is_cached(seg.uid)})
 
     def _api_thumb(self, q):
-        seg = self.app.index.get(q.get("id", ""))
+        seg = self._seg(q)
         if not seg:
-            return self._err(404, "片段不存在")
+            return
         try:
             t = float(q.get("t", "1"))
         except ValueError:
             t = 1.0
-        p = self.app.encoder.thumb(seg.path, seg.sid, min(t, max(0.0, seg.dur - 0.5)))
+        p = self.app.encoder.thumb(seg.path, seg.uid, min(t, max(0.0, seg.dur - 0.5)))
         if not p:
             return self._err(500, "缩略图生成失败")
         self._serve_file(p, "image/jpeg")
 
     def _api_media(self, q):
-        seg = self.app.index.get(q.get("id", ""))
+        seg = self._seg(q)
         if not seg:
-            return self._err(404, "片段不存在")
+            return
         enc = self.app.encoder
-        if not enc.is_cached(seg.sid):
-            if not enc.cache(seg.sid, seg.path):
+        if not enc.is_cached(seg.uid):
+            if not enc.cache(seg.uid, seg.path):
                 return self._err(500, "转码失败")
-        self._serve_file(enc.video_path(seg.sid), "video/mp4")
+        self._serve_file(enc.video_path(seg.uid), "video/mp4")
 
     def _api_stream(self, q):
         """实时转码边转边播：首字节约 1 秒，适合立即起播。"""
-        seg = self.app.index.get(q.get("id", ""))
+        seg = self._seg(q)
         if not seg:
-            return self._err(404, "片段不存在")
+            return
         if not FFMPEG:
             return self._err(500, "未找到 ffmpeg，无法转码")
 
@@ -716,7 +985,7 @@ class Handler(BaseHTTPRequestHandler):
         day = q.get("date", "")
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
             return self._err(400, "date 需为 YYYY-MM-DD")
-        segs = self.app.index.day_segments(day)
+        segs = self.app.index.day_segments(day) if self.app.index else []
         if not segs:
             return self._err(404, "该日期没有录像")
         if not FFMPEG:
@@ -792,7 +1061,8 @@ def build_parser():
         prog="xiaomi-camera-viewer",
         description="把米家摄像头碎片录像整合成可拖时间轴回放的监控台",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument("--root", default=".", help="录像根目录")
+    p.add_argument("--root", default=None,
+                   help="录像根目录；不填则启动后在网页里选择（会记住上次选的）")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--host", default="127.0.0.1", help="监听地址，默认仅本机")
     p.add_argument("--cache", default=None, help="转码缓存目录，默认用户本地缓存")
@@ -814,36 +1084,56 @@ def main(argv=None) -> int:
             pass
 
     args = build_parser().parse_args(argv)
-    root = Path(args.root).expanduser().resolve()
-    if not root.is_dir():
-        print(f"[!] 录像目录不存在: {root}", file=sys.stderr)
-        return 2
     if not FFMPEG:
         print("[!] 未找到 ffmpeg，请先安装并加入 PATH：https://ffmpeg.org", file=sys.stderr)
         return 2
 
     cache_dir = Path(args.cache).expanduser().resolve() if args.cache else default_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
     if free_bytes(cache_dir) < 1024 ** 3:
         print(f"[!] 缓存目录所在磁盘剩余空间不足 1GB: {cache_dir}", file=sys.stderr)
         return 2
 
-    print(f"[*] 录像目录 : {root}")
     print(f"[*] 缓存目录 : {cache_dir}")
-    avail = free_bytes(root)
-    if 0 <= avail < 1024 ** 3:
-        print(f"[i] 提示：录像所在磁盘仅剩 {human_size(avail)}，"
-              f"只读取不写入，不影响回放。", file=sys.stderr)
-    print("[*] 扫描索引 ...", end="", flush=True)
 
-    app = App(root, cache_dir, args.height, args.fps, args.crf, args.cache_max_gb)
-    app.index.refresh()
-    st = app.index.stats()
+    app = App(cache_dir, args.height, args.fps, args.crf, args.cache_max_gb)
 
-    print(f"\r[*] 索引完成 : {st['files']} 片段 / {human_size(st['bytes'])} / "
-          f"{st['days']} 天 / 摄像头 {len(st['cameras'])} 个 / "
-          f"{st['scan_seconds']}s / 跳过损坏 {st['skipped']}")
-    if not st["files"]:
-        print("[!] 目录里没有可识别的 mp4，运行后页面会是空的。", file=sys.stderr)
+    # 初始目录：命令行 --root 优先，其次上次打开过的
+    candidates: list[Path] = []
+    if args.root:
+        candidates.append(Path(args.root).expanduser())
+    last = load_config(cache_dir).get("root")
+    if last:
+        candidates.append(Path(last))
+
+    chosen: Path | None = None
+    for cand in candidates:
+        try:
+            if cand.is_dir():
+                chosen = cand
+                break
+            if args.root:
+                print(f"[!] 目录不存在，忽略：{cand}", file=sys.stderr)
+        except OSError:
+            continue
+
+    if chosen:
+        print(f"[*] 录像目录 : {chosen}")
+        print("[*] 扫描索引 ...", end="", flush=True)
+        app.set_root(chosen, wait=True)
+        st = app.index.stats() if app.index else None
+        if st:
+            print(f"\r[*] 索引完成 : {st['files']} 片段 / {human_size(st['bytes'])} / "
+                  f"{st['days']} 天 / 摄像头 {len(st['cameras'])} 个 / "
+                  f"{st['scan_seconds']}s / 跳过损坏 {st['skipped']}")
+            if not st["files"]:
+                print("[!] 该目录里没有可识别的 mp4，请在网页里换一个目录。",
+                      file=sys.stderr)
+        avail = free_bytes(chosen)
+        if 0 <= avail < 1024 ** 3:
+            print(f"[i] 提示：录像所在磁盘仅剩 {human_size(avail)}，只读取不写入。")
+    else:
+        print("[i] 尚未选择录像目录，启动后在网页里点「选择文件夹」。")
 
     handler = type("BoundHandler", (Handler,), {"app": app})
     try:

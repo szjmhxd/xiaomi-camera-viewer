@@ -1,9 +1,6 @@
 #!/usr/bin/env sh
-# 用法: ./run.sh /path/to/xiaomi_camera_videos
+# 不带参数启动：在网页里选文件夹，下次自动记住
+# 也可以 ./run.sh /path/to/xiaomi_camera_videos 直接指定目录
 set -e
-if [ -z "$1" ]; then
-  echo "用法: ./run.sh <录像目录>"
-  exit 1
-fi
 DIR=$(cd "$(dirname "$0")" && pwd)
-exec python3 "$DIR/server.py" --root "$1"
+exec python3 "$DIR/server.py" "$@"

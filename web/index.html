@@ -74,6 +74,9 @@
     <section class="stage">
       <div class="player" id="player">
         <video id="video" playsinline preload="auto" muted></video>
+        <img class="player-cover hide" id="playerCover" alt="" draggable="false">
+        <button class="player-bigplay hide" id="playerBigPlay" title="播放">▶</button>
+        <div class="player-hint hide" id="playerHint"></div>
 
         <div class="player-msg" id="playerMsg">
           <div class="spin" id="msgSpin"></div>
@@ -136,6 +139,8 @@
       <button class="icon-btn" id="fsClose" title="关闭">✕</button>
     </header>
 
+    <p class="fs-note">下面列的是<strong>运行服务的那台电脑</strong>上的磁盘；手机连同一网络时，选的也是这些盘。</p>
+
     <div class="fs-drives" id="fsDrives"></div>
 
     <div class="fs-pathbar">
@@ -146,6 +151,15 @@
     <div class="fs-list" id="fsList"></div>
 
     <div class="fs-recent" id="fsRecent"></div>
+
+    <div class="fs-extra">
+      <div class="fs-extra-row">
+        <button class="ghost-btn" id="fsUploadBtn">⬆ 上传本机视频</button>
+        <input id="fsUploadInput" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.avi" multiple hidden>
+        <span class="fs-upload-state" id="fsUploadState"></span>
+      </div>
+      <div class="fs-net" id="fsNet"></div>
+    </div>
 
     <footer class="fs-foot">
       <span class="fs-hint" id="fsHint">选中包含录像的目录，点右下角确认</span>

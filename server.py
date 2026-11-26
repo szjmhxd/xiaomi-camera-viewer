@@ -31,6 +31,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -40,7 +41,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # 米家 SD 卡文件名：<当天小时>H? 实际为 <分钟内分钟>M<秒>S_<unix 起始时间戳>.mp4
 NAME_RE = re.compile(r"^(\d{1,3})M(\d{1,2})S_(\d{9,11})\.mp4$", re.I)
@@ -97,6 +98,78 @@ def free_bytes(path: Path) -> int:
         return shutil.disk_usage(p).free
     except OSError:
         return -1
+
+
+def lan_addresses(port: int) -> list[str]:
+    """本机在局域网里可能被访问到的地址。
+
+    Windows 上会混进 WSL / Hyper-V / VMware 的虚拟网卡，它们的特征是私网地址
+    且末位为 .1，直接过滤掉；剩下的把默认出口网卡排最前。
+    """
+    ips: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip and not ip.startswith("127.") and ip != "0.0.0.0":
+                ips.add(ip)
+    except OSError:
+        pass
+
+    primary = None
+    for probe in ("223.5.5.5", "8.8.8.8"):     # 兜底：取默认出口网卡的地址
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.settimeout(0.3)
+            sock.connect((probe, 53))
+            primary = sock.getsockname()[0]
+            ips.add(primary)
+            break
+        except OSError:
+            continue
+        finally:
+            sock.close()
+
+    def private(ip: str) -> bool:
+        return (ip.startswith("192.168.") or ip.startswith("10.")
+                or (ip.startswith("172.") and 16 <= int(ip.split(".")[1] or 0) <= 31))
+
+    real = {ip for ip in ips if not (private(ip) and ip.endswith(".1"))}
+    if real:
+        ips = real
+
+    def rank(ip: str) -> tuple:
+        if ip == primary:
+            return (0, ip)
+        if ip.startswith("192.168."):
+            return (1, ip)
+        if ip.startswith("10."):
+            return (2, ip)
+        if ip.startswith("172."):
+            return (4, ip)
+        return (3, ip)                          # 100.x 这类 Tailscale / 其他虚拟网卡
+
+    return [f"http://{ip}:{port}/" for ip in sorted(ips, key=rank)]
+
+
+def load_sources(dirpath: str) -> dict:
+    """上传目录里的 sources.json：文件名 -> (起始秒, 时长)。
+
+    手机上传的文件没有米家的 `<分>M<秒>S_<时间戳>` 命名，靠 mtime 排不出顺序，
+    上传结束时按真实时长顺序写一份时间表，扫描时优先用它。
+    """
+    try:
+        data = json.loads((Path(dirpath) / "sources.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, list):
+        return {}
+    out: dict[str, tuple[int, float]] = {}
+    for item in data:
+        try:
+            out[str(item["name"])] = (int(item["start"]), float(item.get("dur") or 60.0))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
 
 
 # ---- 配置文件：记住上次打开的文件夹 ----
@@ -326,6 +399,7 @@ class Index:
 
         while stack:
             d = stack.pop()
+            meta = load_sources(str(d))
             try:
                 it = os.scandir(d)
             except OSError:
@@ -348,11 +422,17 @@ class Index:
                             skipped += 1
                             continue
                         m = NAME_RE.match(e.name)
-                        start = int(m.group(3)) if m else int(st.st_mtime)
+                        info = meta.get(e.name)
+                        if m:
+                            start = int(m.group(3))
+                        elif info:
+                            start = info[0]
+                        else:
+                            start = int(st.st_mtime)
                         rel = os.path.relpath(e.path, root_str).replace("\\", "/")
                         cam = rel.split("/")[0] if "/" in rel else "default"
                         cams.add(cam)
-                        dur = self.durations.get(rel, 60.0)
+                        dur = self.durations.get(rel) or (info[1] if info else 60.0)
                         segs.append(Segment(rel, cam, e.path, start, st.st_size, dur))
                     except OSError:
                         continue
@@ -732,6 +812,113 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.route(head=False)
 
+    def do_POST(self):
+        try:
+            u = urllib.parse.urlparse(self.path)
+            path = urllib.parse.unquote(u.path)
+            q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
+            if path == "/api/upload":
+                return self._api_upload(q)
+            if path == "/api/upload/finish":
+                return self._api_upload_finish(q)
+            return self._err(404, "未知路径")
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+        except Exception as exc:  # 顶层兜底
+            self.close_connection = True
+            try:
+                self._err(500, f"{type(exc).__name__}: {exc}")
+            except Exception:
+                pass
+
+    # -- 上传（手机/其他设备上的视频文件）----------------------------------
+    def _api_upload(self, q):
+        raw = q.get("name", "").strip()
+        batch = q.get("batch", "").strip()
+        if not raw:
+            return self._err(400, "缺少 name 参数")
+        if not re.fullmatch(r"\d{8}-\d{6}", batch):
+            return self._err(400, "batch 需为 YYYYMMDD-HHMMSS")
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", os.path.basename(raw)).strip(" .")
+        name = name[:120] or f"video-{int(time.time())}.mp4"
+        if not name.lower().endswith((".mp4", ".mov", ".m4v", ".mkv", ".avi")):
+            name += ".mp4"
+        try:
+            total = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            total = 0
+        if total <= 0:
+            return self._err(411, "需要 Content-Length")
+
+        target_dir = self.app.cache_dir / "uploads" / batch
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return self._err(500, f"无法创建上传目录：{exc}")
+
+        target = target_dir / name
+        n = 1
+        while target.exists():
+            target = target_dir / f"{Path(name).stem}_{n}{Path(name).suffix}"
+            n += 1
+
+        wrote = 0
+        try:
+            with open(target, "wb") as f:
+                left = total
+                while left > 0:
+                    chunk = self.rfile.read(min(1048576, left))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    left -= len(chunk)
+                    wrote += len(chunk)
+        except OSError as exc:
+            target.unlink(missing_ok=True)
+            self.close_connection = True
+            return self._err(500, f"写盘失败：{exc}")
+
+        if wrote < total:                     # 客户端断流，别留下半截文件
+            target.unlink(missing_ok=True)
+            self.close_connection = True
+            return self._err(400, "上传中断")
+
+        self._json({"ok": True, "name": target.name, "bytes": wrote,
+                    "dir": str(target_dir)})
+
+    def _api_upload_finish(self, q):
+        """上传结束：探测每段真实时长，按顺序写时间表，避免时间轴重叠。"""
+        batch = q.get("batch", "").strip()
+        if not re.fullmatch(r"\d{8}-\d{6}", batch):
+            return self._err(400, "batch 需为 YYYYMMDD-HHMMSS")
+        target_dir = self.app.cache_dir / "uploads" / batch
+        if not target_dir.is_dir():
+            return self._err(404, "上传目录不存在")
+        try:
+            files = [p for p in target_dir.iterdir()
+                     if p.is_file() and p.suffix.lower() in
+                     (".mp4", ".mov", ".m4v", ".mkv", ".avi")
+                     and p.stat().st_size >= 1024]
+        except OSError as exc:
+            return self._err(500, str(exc))
+        files.sort(key=lambda p: p.name.lower())
+        if not files:
+            return self._err(400, "没有可用的视频文件")
+
+        start = int(files[0].stat().st_mtime)
+        items = []
+        for p in files:
+            dur = self.app.encoder.probe_duration(str(p)) or 60.0
+            items.append({"name": p.name, "start": start, "dur": round(dur, 3)})
+            start += int(round(dur)) + 1
+        try:
+            (target_dir / "sources.json").write_text(
+                json.dumps(items, ensure_ascii=False, indent=1), "utf-8")
+        except OSError as exc:
+            return self._err(500, f"写入时间表失败：{exc}")
+        self._json({"ok": True, "dir": str(target_dir), "files": len(items),
+                    "seconds": round(sum(i["dur"] for i in items), 1)})
+
     def route(self, head=False):
         try:
             u = urllib.parse.urlparse(self.path)
@@ -796,12 +983,19 @@ class Handler(BaseHTTPRequestHandler):
     def _api_config(self, q):
         enc = self.app.encoder
         st = self.app.status()
+        try:
+            bound_host, bound_port = self.server.server_address[:2]
+        except Exception:
+            bound_host, bound_port = "127.0.0.1", 8765
+        lan = lan_addresses(bound_port) if bound_host in ("0.0.0.0", "", "::") else []
         self._json({
             "version": VERSION,
             "root": st["root"],
             "name": st["name"],
             "scanning": st["scanning"],
             "error": st["error"],
+            "lan": lan,
+            "lan_enabled": bool(lan),
             "stats": st["stats"] or {
                 "files": 0, "bytes": 0, "days": 0, "cameras": [],
                 "skipped": 0, "scan_seconds": 0, "first": None, "last": None,
@@ -1064,7 +1258,9 @@ def build_parser():
     p.add_argument("--root", default=None,
                    help="录像根目录；不填则启动后在网页里选择（会记住上次选的）")
     p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--host", default="127.0.0.1", help="监听地址，默认仅本机")
+    p.add_argument("--host", default="0.0.0.0",
+                   help="监听地址；默认 0.0.0.0 表示同一局域网的手机也能访问，"
+                        "只想本机用就填 127.0.0.1")
     p.add_argument("--cache", default=None, help="转码缓存目录，默认用户本地缓存")
     p.add_argument("--cache-max-gb", type=float, default=20.0,
                    help="缓存上限，超出按最久未用淘汰；0 表示不缓存")
@@ -1079,7 +1275,7 @@ def build_parser():
 def main(argv=None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8")   # type: ignore[attr-defined]
+            stream.reconfigure(encoding="utf-8", line_buffering=True)   # type: ignore[attr-defined]
         except Exception:
             pass
 
@@ -1143,9 +1339,18 @@ def main(argv=None) -> int:
         return 2
     httpd.daemon_threads = True
 
-    host = "127.0.0.1" if args.host in ("0.0.0.0", "") else args.host
-    url = f"http://{host}:{args.port}/"
-    print(f"[*] 已启动   : {url}")
+    url = f"http://127.0.0.1:{args.port}/"
+    print(f"[*] 本机访问 : {url}")
+    if args.host in ("0.0.0.0", "", "::"):
+        lan = lan_addresses(args.port)
+        if lan:
+            print("[*] 手机访问 : " + "   ".join(lan))
+            print("[i] 同一 Wi-Fi 下的手机/平板打开上面的地址即可，"
+                  "文件夹列表就是这台电脑的磁盘。")
+        print("[!] 注意：服务没有密码，局域网内任何人都能看这些录像。"
+              "不想开放时用 --host 127.0.0.1 重开。")
+    else:
+        print(f"[*] 仅监听 {args.host}，其他设备无法访问")
     print("[*] Ctrl+C 停止")
 
     if not args.no_browser:

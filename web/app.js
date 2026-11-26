@@ -10,6 +10,7 @@
 
   const el = {
     video: $("#video"), player: $("#player"),
+    cover: $("#playerCover"), bigPlay: $("#playerBigPlay"), hint: $("#playerHint"),
     msg: $("#playerMsg"), msgText: $("#msgText"), msgSpin: $("#msgSpin"),
     badge: $("#playerBadge"), osd: $("#osd"),
     days: $("#days"), daysEmpty: $("#daysEmpty"), sideStat: $("#sideStat"),
@@ -33,6 +34,8 @@
     fsModal: $("#fsModal"), fsDrives: $("#fsDrives"), fsPath: $("#fsPath"),
     fsList: $("#fsList"), fsUp: $("#fsUp"), fsRecent: $("#fsRecent"),
     fsHint: $("#fsHint"), fsOk: $("#fsOk"), fsCancel: $("#fsCancel"), fsClose: $("#fsClose"),
+    fsUploadBtn: $("#fsUploadBtn"), fsUploadInput: $("#fsUploadInput"),
+    fsUploadState: $("#fsUploadState"), fsNet: $("#fsNet"),
   };
 
   const S = {
@@ -49,6 +52,7 @@
     blocks: [],
     filter: { text: "", quick: "all" },
     folder: null,     // 当前录像目录名，用于 localStorage 分桶
+    pending: null,    // 已定位但还没起播：{ i, off }，点播放时才真正加载
     fs: { path: "", dirs: [], selected: -1 },
     busy: false,
   };
@@ -201,7 +205,8 @@
     const pick = S.days.find((d) => d.date === hash)
       || S.days.find((d) => d.date === last)
       || S.days[0];
-    await selectDay(pick.date, { autoplay: true });
+    // 扫描完只定位到最近一天的第一段并显示首帧，不自动播放、不触发转码
+    await selectDay(pick.date, { autoplay: false });
   }
 
   /* --------------------------- 日期筛选 ---------------------------- */
@@ -376,15 +381,73 @@
     } catch (_) { /* 解码异常时忽略 */ }
   }
 
+  /* 未起播时的封面：用服务端抽帧缩略图，成本远低于转码一整段 */
+  let coverToken = 0;
+  let coverTimer = null;
+  function showCover(seg, off, text) {
+    const tok = ++coverToken;
+    el.bigPlay.classList.remove("hide");
+    if (text) {
+      el.hint.textContent = text;
+      el.hint.classList.remove("hide");
+    } else {
+      el.hint.classList.add("hide");
+    }
+    clearTimeout(coverTimer);
+    // 拖动时间轴时连续触发，稍等一下再抽帧，别把 ffmpeg 打满
+    coverTimer = setTimeout(() => {
+      if (tok !== coverToken) return;
+      el.cover.onload = () => { if (tok === coverToken) el.cover.classList.remove("hide"); };
+      el.cover.onerror = () => { if (tok === coverToken) el.cover.classList.add("hide"); };
+      el.cover.src = `/api/thumb?id=${encodeURIComponent(seg.id)}&t=${(off + 0.6).toFixed(2)}`;
+    }, 180);
+  }
+  function hideCover() {
+    coverToken++;
+    clearTimeout(coverTimer);
+    el.cover.classList.add("hide");
+    el.bigPlay.classList.add("hide");
+    el.hint.classList.add("hide");
+  }
+
   async function startSeg(i, off, autoplay) {
     if (i < 0 || i >= S.segs.length) return;
     const seg = S.segs[i];
     off = Math.max(0, Math.min(off || 0, Math.max(0, seg.t - 0.3)));
 
+    // 只定位、不播放：不请求 /api/stream，避免为了显示一帧就启动一次转码
+    if (!autoplay) {
+      // 已缓存的同一段：直接 seek 到目标帧，拖动时间轴时能立刻看到画面
+      const sameFile = seg.cached && i === S.idx && S.mode === "file" && el.video.currentSrc;
+      S.pending = { i, off };
+      S.idx = i;
+      S.playing = false;
+      if (sameFile) {
+        S.origin = 0;
+        hideCover();
+        try { el.video.pause(); el.video.currentTime = off; } catch (_) {}
+        idleHint(`已定位到 ${hms(seg.s + off)}，点 ▶ 继续`);
+        setTimeout(updateClock, 120);
+      } else {
+        S.origin = off;
+        S.mode = seg.cached ? "file" : "stream";
+        try { el.video.pause(); el.video.removeAttribute("src"); el.video.load(); } catch (_) {}
+        showCover(seg, off, `点击播放 · 从 ${hms(seg.s + off)} 开始`);
+        ready();
+      }
+      updatePlayBtn();
+      updateBadge();
+      updateClock();
+      return;
+    }
+
+    S.pending = null;
+    hideCover();
+
     const cached = await checkCached(seg);
 
     // 已缓存且同段：直接 seek，不需要重载
-    if (cached && i === S.idx && S.mode === "file" && !el.video.ended) {
+    if (cached && i === S.idx && S.mode === "file" && el.video.currentSrc && !el.video.ended) {
       try {
         el.video.currentTime = off;
         S.origin = 0;
@@ -472,6 +535,12 @@
   /* ----------------------------- 播放控制 --------------------------- */
   function togglePlay() {
     if (S.idx < 0) return;
+    if (S.pending) {                    // 停在封面：第一次点播放才真正加载
+      const p = S.pending;
+      S.pending = null;
+      startSeg(p.i, p.off, true);
+      return;
+    }
     if (el.video.paused) {
       el.video.play().then(() => { S.playing = true; updatePlayBtn(); })
         .catch(() => toast("浏览器阻止了播放，点一下画面", 2500));
@@ -628,6 +697,91 @@
 
     fsLoadDrives();
     fsGoto(S.fs.path);
+    renderLanAddresses();
+    el.fsUploadState.textContent = "";
+  }
+
+  /* 手机访问地址：只在服务监听 0.0.0.0 时才有 */
+  function renderLanAddresses() {
+    const lan = (S.cfg && S.cfg.lan) || [];
+    if (!lan.length) {
+      el.fsNet.innerHTML = `<span class="net-tip">当前仅本机可访问。想让手机连，启动时不要加 <code>--host 127.0.0.1</code>。</span>`;
+      return;
+    }
+    el.fsNet.innerHTML = "手机访问："
+      + lan.map((u) => `<code data-url="${esc(u)}">${esc(u)}</code>`).join(" ")
+      + `<span class="net-tip">同一 Wi-Fi 下用手机浏览器打开即可，点地址可复制。</span>`;
+    el.fsNet.querySelectorAll("code").forEach((c) => {
+      c.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(c.dataset.url);
+          toast("地址已复制");
+        } catch (_) {
+          toast(c.dataset.url, 4000);
+        }
+      };
+    });
+  }
+
+  /* ------------------------ 上传当前设备上的视频 ---------------------- */
+  function batchId() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-`
+      + `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  }
+
+  function uploadOne(file, batch, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `/api/upload?batch=${batch}&name=${encodeURIComponent(file.name)}`);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) return resolve();
+        let msg = `HTTP ${xhr.status}`;
+        try { msg = JSON.parse(xhr.responseText).error || msg; } catch (_) {}
+        reject(new Error(msg));
+      };
+      xhr.onerror = () => reject(new Error("网络中断"));
+      xhr.ontimeout = () => reject(new Error("上传超时"));
+      xhr.send(file);
+    });
+  }
+
+  async function uploadFiles(fileList) {
+    const files = Array.from(fileList || []).filter((f) => f.size > 0);
+    if (!files.length) return;
+    const batch = batchId();
+    el.fsUploadBtn.disabled = true;
+    el.fsOk.disabled = true;
+    let done = 0;
+    try {
+      for (const f of files) {
+        el.fsUploadState.textContent =
+          `上传中 ${done + 1}/${files.length} · ${(f.size / 1048576).toFixed(0)}MB · 0%`;
+        await uploadOne(f, batch, (pct) => {
+          el.fsUploadState.textContent =
+            `上传中 ${done + 1}/${files.length} · ${(f.size / 1048576).toFixed(0)}MB · ${pct}%`;
+        });
+        done++;
+      }
+      el.fsUploadState.textContent = "读取时长并建立时间轴…";
+      const res = await api(`/api/upload/finish?batch=${batch}`, { method: "POST" });
+      el.fsUploadState.textContent = `已上传 ${res.files} 个，约 ${Math.round(res.seconds / 60)} 分钟录像`;
+      await api(`/api/fs/open?path=${encodeURIComponent(res.dir)}`);
+      closeFolderPicker();
+      resetPlayer();
+      await pollScan();
+    } catch (e) {
+      el.fsUploadState.textContent = `上传失败：${e.message}`;
+      toast(`上传失败：${e.message}`, 5000);
+    } finally {
+      el.fsUploadBtn.disabled = false;
+      el.fsOk.disabled = false;
+      el.fsUploadInput.value = "";
+    }
   }
 
   function closeFolderPicker() {
@@ -718,6 +872,8 @@
   }
 
   function resetPlayer() {
+    hideCover();
+    S.pending = null;
     try {
       el.video.pause();
       el.video.removeAttribute("src");
@@ -744,6 +900,8 @@
     el.fsCancel.onclick = closeFolderPicker;
     el.fsClose.onclick = closeFolderPicker;
     el.fsOk.onclick = fsConfirm;
+    el.fsUploadBtn.onclick = () => el.fsUploadInput.click();
+    el.fsUploadInput.onchange = () => uploadFiles(el.fsUploadInput.files);
     el.fsUp.onclick = () => { if (S.fs.parent) fsGoto(S.fs.parent); };
     el.fsModal.addEventListener("click", (e) => {
       if (e.target === el.fsModal) closeFolderPicker();
@@ -756,6 +914,9 @@
   /* ------------------------------- 事件 ----------------------------- */
   function bindVideo() {
     const v = el.video;
+
+    el.bigPlay.onclick = (e) => { e.stopPropagation(); togglePlay(); };
+    el.cover.onclick = (e) => { e.stopPropagation(); togglePlay(); };
 
     v.addEventListener("timeupdate", () => {
       if (S.idx < 0) return;

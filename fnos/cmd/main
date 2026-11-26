@@ -1,16 +1,71 @@
 #!/bin/bash
-# 容器的启停由飞牛按 config/resource 里的 docker-project 声明托管，
-# 因此这里只实现运行状态查询，避免和平台重复操作同一个 compose 项目。
+# 容器的启停由飞牛按 config/resource 的 docker-project 声明托管（官方 docker 模板原话：
+# "do nothing, docker application will be started by appcenter"），stop 不能自己动手。
+# 但 start 钩子会被调用——用它做「授权目录 → .env → compose up」自愈：
+#   用户在 应用设置 → 访问权限 里勾选录像目录后，只要在应用中心重启一次应用
+#   （或 NAS 重启后开机自启），新路径就会以只读方式挂进容器的 /nas。
+#   compose 的 up -d 带配置漂移检测：.env 没变化时什么都不做，变了才重建容器。
 set -u
 
-CONTAINER="xiaomi-cam-viewer"
+APPNAME="${TRIM_APPNAME:-xiaomi-cam-viewer}"
+PKGVAR="${TRIM_PKGVAR:-/usr/local/apps/@appdata/${APPNAME}}"
+PLOG="${PKGVAR}/main.log"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$PKGVAR" 2>/dev/null || true
+log() {
+    printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$PLOG" 2>/dev/null || true
+    [ -n "${TRIM_TEMP_LOGFILE:-}" ] && printf '%s\n' "$*" >>"$TRIM_TEMP_LOGFILE" 2>/dev/null || true
+    return 0
+}
+
+# 与 sync_env 同款查找顺序：.env 必须和 docker-compose.yaml 同目录
+COMPOSE_DIR=""
+find_compose_dir() {
+    COMPOSE_DIR="${TRIM_COMPOSE_DIR:-}"
+    if [ -z "$COMPOSE_DIR" ]; then
+        for cand in "/vol1/@appcenter/${APPNAME}/docker" \
+                    "/var/apps/${APPNAME}/docker" \
+                    "/var/apps/${APPNAME}/app/docker"; do
+            if [ -f "${cand}/docker-compose.yaml" ]; then
+                COMPOSE_DIR="$cand"
+                return 0
+            fi
+        done
+    fi
+    if [ -z "$COMPOSE_DIR" ]; then
+        C="$(find "/vol1/@appcenter/${APPNAME}" "/var/apps/${APPNAME}" \
+              -name 'docker-compose.y*ml' -type f 2>/dev/null | head -1)"
+        [ -n "$C" ] && COMPOSE_DIR="$(dirname "$C")"
+    fi
+    return 0
+}
 
 case "${1:-}" in
-    start|stop)
+    start)
+        log "---- main start ----"
+        env | grep '^TRIM_DATA' | sort | while IFS= read -r line; do log "env: ${line}"; done
+        if [ -x "${HERE}/sync_env" ]; then
+            "${HERE}/sync_env"
+        fi
+        find_compose_dir
+        if command -v docker >/dev/null 2>&1 && [ -n "$COMPOSE_DIR" ] && [ -f "${COMPOSE_DIR}/docker-compose.yaml" ]; then
+            if docker compose -p "$APPNAME" -f "${COMPOSE_DIR}/docker-compose.yaml" up -d >>"$PLOG" 2>&1; then
+                log "main start: compose up -d 完成（NAS_DIR 有变化时容器自动重建）"
+            else
+                log "main start: compose up -d 失败（见上面输出）。容器由应用中心托管，多数情况不影响使用。"
+            fi
+        else
+            log "main start: 未找到 docker/compose，跳过挂载自愈"
+        fi
+        # start 只做挂载自愈，容器本体由应用中心启动，失败不应把整个应用标记为失败
+        exit 0
+        ;;
+    stop)
+        # 应用中心会停 compose 项目，这里不动，避免两边打架
         exit 0
         ;;
     status)
-        if docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -q '^true$'; then
+        if docker inspect -f '{{.State.Running}}' "$APPNAME" 2>/dev/null | grep -q '^true$'; then
             exit 0
         fi
         exit 3

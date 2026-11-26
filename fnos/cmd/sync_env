@@ -113,4 +113,24 @@ else
     log "没有可用的授权目录，${ENVF} 已清除；容器里 /nas 退回应用共享目录"
 fi
 
+# 兜底：compose 正常按 compose 文件所在目录读 .env（官方规则：项目目录=compose 文件父目录），
+# 但个别版本/调用方式按「运行目录」读。从运行中容器的标签拿它真实的 working_dir，
+# 落在本应用目录内且不同时，同步一份过去（绝不写应用目录之外，避免影响其他 compose 项目）。
+if command -v docker >/dev/null 2>&1; then
+    WD="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$APPNAME" 2>/dev/null || true)"
+    [ "$WD" = "<no value>" ] && WD=""
+    case "$WD" in
+        "/vol1/@appcenter/${APPNAME}"/*|"/var/apps/${APPNAME}"/*)
+            if [ "$WD" != "$DIR" ] && [ -d "$WD" ]; then
+                if [ -n "$TARGET" ]; then
+                    printf 'NAS_DIR=%s\n' "$TARGET" >"${WD}/.env" 2>/dev/null || true
+                else
+                    rm -f "${WD}/.env" 2>/dev/null || true
+                fi
+                log "已同步 .env 到 compose 实际工作目录: ${WD}"
+            fi
+            ;;
+    esac
+fi
+
 exit 0

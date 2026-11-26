@@ -158,7 +158,7 @@ docker compose up -d
 - **端口 18765**：写在 manifest 的 `service_port` 里，飞牛会自动放行；容器内部仍然是 8765。
 - **缓存**写在应用数据目录，上限 15 GB，升级应用不会丢。卸载只删应用本体，录像和缓存保留。
 
-挂载走的是 fnOS 官方的「授权目录」机制，录像原地不动：用户在应用设置里勾选文件夹后，平台把路径放进系统变量 `TRIM_DATA_ACCESSIBLE_PATHS`（冒号分隔，官方文档明确它可能为空），`cmd/sync_env` 取其中第一个真实存在的目录写进 compose 同目录 `.env` 的 `NAS_DIR=`，compose 再用 `${NAS_DIR:-默认共享目录}` 做变量替换。**compose 文件本身永远不被脚本改写**，只写 `.env`。平台没下发变量时（比如升级时机），用应用数据目录里持久化的 `nas_dir.list` 恢复上次值。实测 fnOS 把 compose 放在 `/vol1/@appcenter/<应用名>/docker/docker-compose.yaml`（不是 `/var/apps/...`），脚本两处都找。多个授权目录只挂第一个，其余的写进日志提醒勾父目录。
+挂载走的是 fnOS 官方的「授权目录」机制，录像原地不动：用户在应用设置里勾选文件夹后，平台把路径放进系统变量 `TRIM_DATA_ACCESSIBLE_PATHS`（冒号分隔），`cmd/sync_env` 取其中第一个真实存在的目录写进 compose 同目录 `.env` 的 `NAS_DIR=`，compose 再用 `${NAS_DIR:-默认共享目录}` 做变量替换。**compose 文件本身永远不被脚本改写**，只写 `.env`。同步发生在安装、配置变更和**应用启动**三个时机（`cmd/main start`）——所以在应用设置里勾完授权目录后，**在应用中心重启一次应用**就生效；平台没下发变量时（比如开机自启时机），用应用数据目录里持久化的 `nas_dir.list` 恢复上次值。实测 fnOS 把 compose 放在 `/vol1/@appcenter/<应用名>/docker/docker-compose.yaml`（不是 `/var/apps/...`），脚本两处都找。多个授权目录只挂第一个，其余的写进日志提醒勾父目录。
 
 工程结构：
 
@@ -169,7 +169,7 @@ docker compose up -d
 | `config/privilege` | 运行身份，用应用专用用户 |
 | `app/docker/docker-compose.yaml` | 容器定义，镜像 tag 与 manifest 版本一致；挂载源用 `${NAS_DIR:-...}` 变量替换，真实路径写在同目录 `.env` |
 | `app/ui/config` | 桌面入口（iframe 打开 18765 端口） |
-| `cmd/main` | 只实现 `status`，启停交给 fnOS 托管 |
+| `cmd/main` | `status` 查容器状态；`start` 做一次「授权目录 → .env → compose up」挂载自愈；启停本体交给应用中心 |
 | `cmd/sync_env` | 把「授权目录」结果（`TRIM_DATA_ACCESSIBLE_PATHS`）写进 compose 的 `.env`，compose 文件不动 |
 | `cmd/install_callback` `cmd/upgrade_callback` | 装完 / 升级完调一次 `sync_env` |
 | `cmd/config_callback` | 授权目录变更后重写 `.env` 并重建容器 |
@@ -181,7 +181,7 @@ docker compose up -d
 ```bash
 cd fnos
 FNPACK=/path/to/fnpack ./build.sh
-# 产物：xiaomi-cam-viewer_1.3.2.fpk
+# 产物：xiaomi-cam-viewer_1.3.3.fpk
 ```
 
 `build.sh` 会从 manifest 读版本号、同步写进 compose 的 `image:` 行再打包，两处不会漂移。把生成的 `.fpk` 传到 NAS，应用中心 → 设置 → 手动安装应用即可。

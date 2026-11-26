@@ -44,11 +44,15 @@ fi
 
 # 容器由飞牛的 docker-project 托管，这里用同一个项目名重建，
 # 目的只是让新挂载生效；失败也不影响应用本身，只是需要手动重启一次。
-if command -v docker >/dev/null 2>&1 && [ -n "$DIR" ] && [ -f "${DIR}/docker-compose.yaml" ]; then
-    if docker compose -p "$APPNAME" -f "${DIR}/docker-compose.yaml" up -d --force-recreate --remove-orphans >>"$PLOG" 2>&1; then
-        printf '%s config_callback: .env 已更新，容器已重建\n' "$(date '+%F %T')" >>"$PLOG" 2>/dev/null || true
+if [ -n "$DIR" ] && [ -f "${DIR}/docker-compose.yaml" ]; then
+    if command -v docker >/dev/null 2>&1; then
+        if docker compose -p "$APPNAME" -f "${DIR}/docker-compose.yaml" up -d --force-recreate --remove-orphans >>"$PLOG" 2>&1; then
+            printf '%s config_callback: .env 已更新，容器已重建\n' "$(date '+%F %T')" >>"$PLOG" 2>/dev/null || true
+        else
+            printf '%s config_callback: .env 已写入，但自动重建没成功。请在应用中心重启「摄像头回放台」让新目录生效。\n' "$(date '+%F %T')" >>"$PLOG" 2>/dev/null || true
+        fi
     else
-        printf '%s config_callback: .env 已写入，但自动重建没成功。请在应用中心重启「摄像头回放台」让新目录生效。\n' "$(date '+%F %T')" >>"$PLOG" 2>/dev/null || true
+        printf '%s config_callback: 环境里没有 docker 命令，没法自动重建。请在应用中心重启「摄像头回放台」让新目录生效。\n' "$(date '+%F %T')" >>"$PLOG" 2>/dev/null || true
     fi
 fi
 

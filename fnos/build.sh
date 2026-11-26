@@ -18,7 +18,9 @@ if [ -z "$VERSION" ]; then
 fi
 
 IMAGE_REPO="${IMAGE_REPO:-ghcr.io/szjmhxd/xiaomi-camera-viewer}"
-IMAGE="${IMAGE_REPO}:${VERSION}"
+# fpk 版本（manifest）和镜像 tag 可以解耦：fpk 改的是宿主侧脚本时，
+# 用 IMAGE_TAG=1.3.2 继续指向已存在的镜像，不用等 CI 重新构建。
+IMAGE="${IMAGE_REPO}:${IMAGE_TAG:-$VERSION}"
 FNPACK_BIN="${FNPACK:-fnpack}"
 
 if ! command -v "$FNPACK_BIN" >/dev/null 2>&1; then

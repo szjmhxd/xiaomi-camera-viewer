@@ -17,3 +17,8 @@ concat-*.txt
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 本地启动的服务日志
+.server.log
+.server.err.log
+*.fpk

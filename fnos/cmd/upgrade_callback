@@ -1,4 +1,15 @@
 #!/bin/bash
-# 平台生命周期钩子；本应用在该阶段无需额外处理。
+# 升级完成：新包里的 compose 是模板，挂载路径要重新生成一次。
 set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "${HERE}/apply_mounts" ]; then
+    "${HERE}/apply_mounts"
+fi
+
+VAR="${TRIM_PKGVAR:-}"
+if [ -n "$VAR" ] && [ -n "${TRIM_UID:-}" ] && [ -n "${TRIM_GID:-}" ]; then
+    chown -R "${TRIM_UID}:${TRIM_GID}" "${VAR}/cache" 2>/dev/null || true
+fi
+
 exit 0

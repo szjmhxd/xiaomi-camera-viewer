@@ -1,5 +1,5 @@
 appname=xiaomi-cam-viewer
-version=1.3.0
+version=1.3.1
 display_name=摄像头回放台
 desc=把米家摄像头导出的碎片录像（每分钟一个 mp4）整合成一条可按时间轴回放的监控台：选日期、拖时间轴、跨片段连播、5 档倍速、区间导出为单个视频。
 source=thirdparty
@@ -12,4 +12,4 @@ checkport=true
 ctl_stop=true
 desktop_uidir=ui
 desktop_applaunchname=xiaomi-cam-viewer.main
-changelog=首次发布：时间轴回放、倍速播放、区间导出、手机端适配
+changelog=按平台下发的真实路径生成挂载；支持「授权目录」直接读现有录像文件夹；空档不可点击

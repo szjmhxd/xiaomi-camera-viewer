@@ -1,10 +1,17 @@
 #!/bin/bash
-# 安装完成后的初始化：创建缓存目录，并检查宿主机 Docker 是否就绪。
+# 安装完成：按平台下发的路径生成 compose 挂载，准备缓存目录。
 set -u
 
 LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
-VAR="${TRIM_PKGVAR:-}"
+APPNAME="${TRIM_APPNAME:-xiaomi-cam-viewer}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 
+# 挂载路径由平台环境变量决定，写死不可靠
+if [ -x "${HERE}/apply_mounts" ]; then
+    "${HERE}/apply_mounts"
+fi
+
+VAR="${TRIM_PKGVAR:-}"
 if [ -n "$VAR" ]; then
     mkdir -p "${VAR}/cache" 2>/dev/null || true
     if [ -n "${TRIM_UID:-}" ] && [ -n "${TRIM_GID:-}" ]; then
@@ -13,7 +20,7 @@ if [ -n "$VAR" ]; then
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
-    echo "提示：未检测到 docker 命令，应用可能在启动失败。请在飞牛「Docker」中确认服务已开启。" >>"$LOG"
+    echo "提示：未检测到 docker 命令，应用可能启动失败。请在飞牛「Docker」中确认服务已开启。" >>"$LOG"
 fi
 
 exit 0

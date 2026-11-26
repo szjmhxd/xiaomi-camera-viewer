@@ -1,4 +1,33 @@
 #!/bin/bash
-# 平台生命周期钩子；本应用在该阶段无需额外处理。
+# 授权目录变更：用户在「应用设置 → 授权目录」勾选后平台会调到这里。
+# 重新生成挂载段，再让容器按新挂载重建一次。
 set -u
+
+LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
+APPNAME="${TRIM_APPNAME:-xiaomi-cam-viewer}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+if [ -x "${HERE}/apply_mounts" ]; then
+    "${HERE}/apply_mounts"
+fi
+
+COMPOSE=""
+for cand in "/var/apps/${APPNAME}/docker/docker-compose.yaml" \
+            "/var/apps/${APPNAME}/app/docker/docker-compose.yaml"; do
+    if [ -f "$cand" ]; then
+        COMPOSE="$cand"
+        break
+    fi
+done
+
+# 容器由飞牛的 docker-project 托管，这里用同一个项目名重建，
+# 目的只是让新的挂载生效；失败也不影响应用本身，只是需要手动重启一次。
+if command -v docker >/dev/null 2>&1 && [ -n "$COMPOSE" ]; then
+    if docker compose -p "$APPNAME" -f "$COMPOSE" up -d --remove-orphans >>"$LOG" 2>&1; then
+        echo "config_callback: 挂载已更新，容器已重建" >>"$LOG"
+    else
+        echo "config_callback: 挂载已写入，但自动重建没成功。请在应用中心重启「摄像头回放台」让新目录生效。" >>"$LOG"
+    fi
+fi
+
 exit 0

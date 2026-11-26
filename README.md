@@ -8,7 +8,7 @@
 
 > 配图里的监控画面做了重度模糊处理，其余界面元素是真实截图。
 
-设计思路与实现见[博客文章](blog/2026-11-26-把碎片录像整成时间轴.md)，安装包见 [Releases](https://github.com/szjmhxd/xiaomi-camera-viewer/releases)。
+设计思路与实现见[博客文章](https://szjmhxd.github.io/posts/3607da41/)，安装包见 [Releases](https://github.com/szjmhxd/xiaomi-camera-viewer/releases)。
 
 ## 快速开始
 

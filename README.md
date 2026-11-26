@@ -185,6 +185,8 @@ FNPACK=/path/to/fnpack ./build.sh
 
 `build.sh` 会从 manifest 读版本号、同步写进 compose 的 `image:` 行再打包，两处不会漂移。把生成的 `.fpk` 传到 NAS，应用中心 → 设置 → 手动安装应用即可。
 
+fnpack 版本有个坑：**1.3.x 打包要求开发者证书**（从飞牛开发者平台申请后 `fnpack cert import` 导入），否则报 `Developer certificate is not configured`；本地自用可以 `FNPACK_FLAGS=--nosign ./build.sh` 跳过签名。1.2.x 不要求证书，个人自装用它最省事。另外 fnpack 的产物落在**当前工作目录**而不是 `--directory` 指定的目录，`build.sh` 已经处理了这一点。
+
 一条限制要提前说：**网页里的文件夹选择器只能看到挂进容器的目录**。默认是 `/videos`（应用共享目录），授权过的目录是 `/nas/1` 起。看不到的地方不是应用偷懒，是 fnOS 的权限模型——应用默认读不到任意 `/vol1/1000/...`，要读就得走「授权目录」这一步。授权是只读的，录像不会被改坏。
 
 

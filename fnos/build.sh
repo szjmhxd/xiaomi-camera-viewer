@@ -37,7 +37,12 @@ if [ -f ../LICENSE ]; then
 fi
 
 # 让 compose 里的镜像 tag 始终等于 manifest 版本，两处不会漂移
-python3 - "$WORK/app/docker/docker-compose.yaml" "$IMAGE" <<'PY'
+PYBIN="$(command -v python3 || command -v python)"
+if [ -z "$PYBIN" ]; then
+    echo "找不到 python3 / python" >&2
+    exit 1
+fi
+"$PYBIN" - "$WORK/app/docker/docker-compose.yaml" "$IMAGE" <<'PY'
 import re
 import sys
 
@@ -55,7 +60,11 @@ chmod +x "$WORK"/cmd/*
 echo "打包 ${VERSION} ..."
 # fnpack 的产物落在「当前目录」而不是 --directory（1.2.x/1.3.x 实测如此），
 # 所以切进 WORK 再执行，两种行为都能覆盖到。
-( cd "$WORK" && "$FNPACK_BIN" build --directory "$WORK" )
+# 签名：默认用本地导入的开发者证书；没配证书时 FNPACK_FLAGS=--nosign 跳过
+# （fnpack 原话：For local debugging only——自用 NAS 手动安装够用）。
+FNPACK_FLAGS="${FNPACK_FLAGS:-}"
+# shellcheck disable=SC2086
+( cd "$WORK" && "$FNPACK_BIN" build --directory "$WORK" $FNPACK_FLAGS )
 
 OUT="$(ls -1t "$WORK"/*.fpk 2>/dev/null | head -1 || true)"
 if [ -z "$OUT" ]; then

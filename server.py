@@ -41,12 +41,16 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.3.2"
+VERSION = "1.3.4"
 
 # 米家 SD 卡文件名：<当天小时>H? 实际为 <分钟内分钟>M<秒>S_<unix 起始时间戳>.mp4
 NAME_RE = re.compile(r"^(\d{1,3})M(\d{1,2})S_(\d{9,11})\.mp4$", re.I)
 
-WEB_DIR = Path(__file__).resolve().parent / "web"
+if getattr(sys, "frozen", False):
+    # PyInstaller onefile：web 资源随包解压到 _MEIPASS
+    WEB_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent)) / "web"
+else:
+    WEB_DIR = Path(__file__).resolve().parent / "web"
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
@@ -63,6 +67,12 @@ def which(name: str) -> str | None:
             p = shutil.which(cand)
             if p:
                 return p
+    # 打包成 exe 后：允许把 ffmpeg.exe / ffprobe.exe 放在程序同目录
+    if getattr(sys, "frozen", False):
+        for cand in (f"{name}.exe", name):
+            p = Path(sys.executable).resolve().parent / cand
+            if p.is_file():
+                return str(p)
     return None
 
 

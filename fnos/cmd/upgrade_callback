@@ -1,10 +1,11 @@
 #!/bin/bash
-# 升级完成：新包里的 compose 是模板，把持久化的授权目录重新写进 .env。
+# 升级完成：新包里的 compose 是模板，把持久化的授权目录写回 .env 并重建容器。
+# upgrade_init 已在升级前把旧挂载/旧 .env 收进 nas_dir.list，这里恢复并生效。
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-if [ -x "${HERE}/sync_env" ]; then
-    "${HERE}/sync_env"
+if [ -x "${HERE}/recreate" ]; then
+    "${HERE}/recreate"
 fi
 
 VAR="${TRIM_PKGVAR:-}"

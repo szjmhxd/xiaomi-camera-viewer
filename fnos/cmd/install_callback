@@ -1,13 +1,15 @@
 #!/bin/bash
-# 安装完成：把「授权目录」写进 compose 的 .env，准备缓存目录。
+# 安装完成：写 .env 并立刻重建容器——首次安装就不需要任何手动命令。
+# 时序上有两种可能（应用中心先建容器 / 先跑本脚本），写完 .env 立刻
+# force-recreate 可以同时盖住两种情况。
 set -u
 
 LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-# 授权目录（TRIM_DATA_ACCESSIBLE_PATHS）→ .env 的 NAS_DIR，compose 变量替换成挂载源
-if [ -x "${HERE}/sync_env" ]; then
-    "${HERE}/sync_env"
+# 授权目录 → .env → 重建容器（统一入口）
+if [ -x "${HERE}/recreate" ]; then
+    "${HERE}/recreate"
 fi
 
 VAR="${TRIM_PKGVAR:-}"

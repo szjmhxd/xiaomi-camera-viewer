@@ -1,0 +1,65 @@
+#!/bin/bash
+# 统一的「授权目录 → .env → 重建容器」动作。
+#   1. 调 sync_env：把 TRIM_DATA_ACCESSIBLE_PATHS 写成 compose 同目录 .env 的 NAS_DIR
+#   2. docker compose up -d --force-recreate：让新挂载立刻生效
+# install / upgrade / config 回调和 main start 都走这里，行为一致。
+# 任一步失败只记日志、绝不让安装或启动失败——容器由应用中心托管，
+# 最坏情况是到应用中心重启一次应用。
+set -u
+
+APPNAME="${TRIM_APPNAME:-xiaomi-cam-viewer}"
+PKGVAR="${TRIM_PKGVAR:-/usr/local/apps/@appdata/${APPNAME}}"
+PLOG="${PKGVAR}/recreate.log"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$PKGVAR" 2>/dev/null || true
+log() {
+    printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$PLOG" 2>/dev/null || true
+    [ -n "${TRIM_TEMP_LOGFILE:-}" ] && printf '%s\n' "$*" >>"$TRIM_TEMP_LOGFILE" 2>/dev/null || true
+    return 0
+}
+
+log "---- recreate 开始 ----"
+
+# 1) 授权目录 → .env
+if [ -x "${HERE}/sync_env" ]; then
+    "${HERE}/sync_env" || log "sync_env 返回非零，继续"
+fi
+
+# 2) 定位 compose 项目目录（与 sync_env 同款查找顺序）
+DIR="${TRIM_COMPOSE_DIR:-}"
+if [ -z "$DIR" ]; then
+    for cand in "/vol1/@appcenter/${APPNAME}/docker" \
+                "/var/apps/${APPNAME}/docker" \
+                "/var/apps/${APPNAME}/app/docker"; do
+        if [ -f "${cand}/docker-compose.yaml" ]; then
+            DIR="$cand"
+            break
+        fi
+    done
+fi
+if [ -z "$DIR" ]; then
+    C="$(find "/vol1/@appcenter/${APPNAME}" "/var/apps/${APPNAME}" \
+          -name 'docker-compose.y*ml' -type f 2>/dev/null | head -1)"
+    [ -n "$C" ] && DIR="$(dirname "$C")"
+fi
+
+if [ -z "$DIR" ] || [ ! -f "${DIR}/docker-compose.yaml" ]; then
+    log "找不到 docker-compose.yaml，跳过容器重建"
+    exit 0
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+    log "环境里没有 docker 命令，跳过容器重建（.env 已写好，应用中心启动容器时会带上）"
+    exit 0
+fi
+
+# force-recreate：不依赖各版本 compose 的配置漂移检测，.env 有任何变化都保证生效。
+# 用 -p 显式项目名，和应用中心托管的是同一个 compose 项目，不会起第二个容器。
+log "compose 目录: ${DIR}，开始重建容器"
+if docker compose -p "$APPNAME" -f "${DIR}/docker-compose.yaml" up -d --force-recreate --remove-orphans >>"$PLOG" 2>&1; then
+    log "容器已重建，新挂载生效"
+else
+    log "自动重建没成功（见上面输出）。请在应用中心重启「摄像头回放台」让新目录生效。"
+fi
+
+exit 0

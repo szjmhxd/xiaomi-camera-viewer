@@ -8,6 +8,8 @@
 
 > 配图里的监控画面做了重度模糊处理，其余界面元素是真实截图。
 
+设计思路与实现见[博客文章](blog/2026-11-26-把碎片录像整成时间轴.md)，安装包见 [Releases](https://github.com/szjmhxd/xiaomi-camera-viewer/releases)。
+
 ## 快速开始
 
 ```
@@ -29,7 +31,7 @@ python server.py
 python server.py --root "D:/xiaomi_camera_videos"
 ```
 
-只依赖 Python 3.9+ 和系统里的 ffmpeg，没有 pip 依赖。不想装 Python 也行，仓库自带镜像：`docker compose up -d`，见 [Docker 部署](#docker-部署)。
+只依赖 Python 3.9+ 和系统里的 ffmpeg，没有 pip 依赖。不想装 Python 也行，两个免安装选择：Windows 用 [Release](https://github.com/szjmhxd/xiaomi-camera-viewer/releases) 里的单文件 `XiaomiCamViewer-1.3.4-win-x64.exe`（把 `ffmpeg.exe`/`ffprobe.exe` 放同目录或加进 PATH），NAS 用 Docker 镜像 `docker compose up -d`，见 [Docker 部署](#docker-部署)。
 
 ---
 
@@ -108,10 +110,10 @@ docker compose up -d
 镜像由 GitHub Actions 构建（amd64 + arm64），推 tag 或改主分支都会触发。**首次构建完成后，需要到 GitHub 仓库的 Packages 页面把镜像可见性改成 public**，否则 NAS 拉取会返回 401。不想用现成镜像就本地构建：
 
 ```bash
-docker build -t xiaomi-camera-viewer:1.3.2 .
+docker build -t xiaomi-camera-viewer:1.3.4 .
 ```
 
-然后把 compose 里的 `image:` 换成 `xiaomi-camera-viewer:1.3.2`，或改成 `build: .`。
+然后把 compose 里的 `image:` 换成 `xiaomi-camera-viewer:1.3.4`，或改成 `build: .`。
 
 ### 国内拉取镜像（ghcr.io 被重置）
 
@@ -131,18 +133,18 @@ curl -sI https://ghcr.m.daocloud.io/v2/ | head -1
 
 ```bash
 # 1) 拉
-docker pull ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.2
-#    或 docker pull ghcr.nju.edu.cn/szjmhxd/xiaomi-camera-viewer:1.3.2
+docker pull ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.4
+#    或 docker pull ghcr.nju.edu.cn/szjmhxd/xiaomi-camera-viewer:1.3.4
 
 # 2) 打回原名（关键，否则 compose 认不到）
-docker tag ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.2 \
-           ghcr.io/szjmhxd/xiaomi-camera-viewer:1.3.2
+docker tag ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.4 \
+           ghcr.io/szjmhxd/xiaomi-camera-viewer:1.3.4
 
 # 3) 直接起，本地已有镜像就不会再去拉
 docker compose up -d
 ```
 
-飞牛应用同理：先把镜像拉好并打回原名，再启动应用。在飞牛 Docker 界面手动拉取时，地址直接填 `ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.2`，拉完在镜像列表里重命名即可。
+飞牛应用同理：先把镜像拉好并打回原名，再启动应用。在飞牛 Docker 界面手动拉取时，地址直接填 `ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.4`，拉完在镜像列表里重命名即可。
 
 一点提醒：网上常见的「`/etc/docker/daemon.json` 里配 `registry-mirrors` 做全局加速」，Docker 官方只保证对 `docker.io` 生效，对 `ghcr.io` 不一定管用。**别当主方案**，以前缀替换为准。
 

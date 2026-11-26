@@ -41,7 +41,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # 米家 SD 卡文件名：<当天小时>H? 实际为 <分钟内分钟>M<秒>S_<unix 起始时间戳>.mp4
 NAME_RE = re.compile(r"^(\d{1,3})M(\d{1,2})S_(\d{9,11})\.mp4$", re.I)
@@ -132,6 +132,15 @@ def lan_addresses(port: int) -> list[str]:
     def private(ip: str) -> bool:
         return (ip.startswith("192.168.") or ip.startswith("10.")
                 or (ip.startswith("172.") and 16 <= int(ip.split(".")[1] or 0) <= 31))
+
+    def bogus(ip: str) -> bool:
+        # 198.18.0.0/15 是 Clash 之类 TUN 代理的假地址，169.254 是链路本地，都对端连不上
+        return (ip.startswith("198.18.") or ip.startswith("198.19.")
+                or ip.startswith("169.254."))
+
+    ips = {ip for ip in ips if not bogus(ip)}
+    if primary and bogus(primary):
+        primary = None
 
     real = {ip for ip in ips if not (private(ip) and ip.endswith(".1"))}
     if real:

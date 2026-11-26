@@ -36,6 +36,10 @@
     fsHint: $("#fsHint"), fsOk: $("#fsOk"), fsCancel: $("#fsCancel"), fsClose: $("#fsClose"),
     fsUploadBtn: $("#fsUploadBtn"), fsUploadInput: $("#fsUploadInput"),
     fsUploadState: $("#fsUploadState"), fsNet: $("#fsNet"),
+    // 配色
+    themeBtn: $("#btnTheme"), themePop: $("#themePop"), themeGrid: $("#themeGrid"),
+    // 手机端信息面板
+    miDate: $("#miDate"), miFacts: $("#miFacts"),
   };
 
   const S = {
@@ -246,19 +250,35 @@
     el.daySearchClear.hidden = !S.filter.text;
   }
 
+  const WEEK = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  const weekdayOf = (dateStr) => {
+    const d = new Date(dateStr + "T00:00:00");
+    return Number.isNaN(d.getTime()) ? "" : WEEK[d.getDay()];
+  };
+
   function renderDays(list) {
     const maxSec = Math.max.apply(null, S.days.map((d) => d.seconds).concat([1]));
     el.days.innerHTML = "";
+    let lastMonth = "";
     for (const d of list) {
+      // 跨月时插一条月份分隔，长列表更适合按月份扫
+      const month = d.date.slice(0, 7);
+      if (month !== lastMonth) {
+        lastMonth = month;
+        const h = document.createElement("div");
+        h.className = "day-month";
+        h.textContent = month.replace("-", " 年 ") + " 月";
+        el.days.appendChild(h);
+      }
       const b = document.createElement("button");
       b.className = "day" + (d.date === S.date ? " on" : "");
       b.dataset.date = d.date;
       const pct = Math.max(3, (d.seconds / maxSec) * 100);
       b.innerHTML =
-        `<span class="day-d">${d.date.slice(5)}</span>` +
+        `<span class="day-d">${d.date.slice(5)}<em>${weekdayOf(d.date)}</em></span>` +
         `<span class="day-bar"><i style="width:${pct.toFixed(1)}%"></i></span>` +
         `<span class="day-c">${(d.seconds / 3600).toFixed(1)}h</span>`;
-      b.title = `${d.date} · ${d.count} 个片段 · ${humanSize(d.bytes)}`;
+      b.title = `${d.date} ${weekdayOf(d.date)} · ${d.count} 个片段 · ${humanSize(d.bytes)}`;
       b.onclick = () => selectDay(d.date);
       el.days.appendChild(b);
     }
@@ -290,8 +310,10 @@
   }
 
   /* ------------------------------ 选日期 ---------------------------- */
+  /* 选日期只定位到当天第一段（或上次位置）并显示封面：
+   * 不加载视频、不触发转码，必须再点时间点或播放键才起播。 */
   async function selectDay(date, opts) {
-    const autoplay = !opts || opts.autoplay !== false;
+    const autoplay = !!(opts && opts.autoplay === true);
     if (S.date === date && S.segs.length) return;
     S.date = date;
     location.hash = date;
@@ -316,6 +338,9 @@
     el.dayLabel.textContent = date;
     el.dayMeta.textContent =
       `${data.count} 个片段 · 共 ${hours} 小时录像 · ${humanSize(total)}`;
+    el.miDate.textContent = `${date} ${weekdayOf(date)}`;
+    el.miFacts.innerHTML =
+      `<li>${data.count} 段</li><li>${hours} 小时</li><li>${humanSize(total)}</li>`;
 
     drawTimeline();
     if (!S.segs.length) {
@@ -556,11 +581,15 @@
 
   function updateBadge() {
     const seg = S.segs[S.idx];
-    if (!seg) return;
+    if (!seg) { el.badge.classList.remove("show"); return; }
     el.badge.classList.add("show");
-    el.badge.innerHTML = S.mode === "file"
-      ? `<span class="dot"></span>本地缓存 · 秒开`
-      : `<span class="dot trans"></span>实时转码 720p`;
+    if (S.pending) {
+      el.badge.innerHTML = `<span class="dot idle"></span>已定位 · 待播放`;
+    } else if (S.mode === "file") {
+      el.badge.innerHTML = `<span class="dot"></span>本地缓存 · 秒开`;
+    } else {
+      el.badge.innerHTML = `<span class="dot trans"></span>实时转码 720p`;
+    }
   }
 
   function updateClock() {
@@ -584,6 +613,12 @@
   }
 
   /* ------------------------------ 时间轴 ---------------------------- */
+  /* 颜色全部从 CSS 变量读，切换主题时重画即可跟着变 */
+  function cssVar(name, fallback) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  }
+
   function drawTimeline() {
     const cv = el.canvas;
     const rect = el.tl.getBoundingClientRect();
@@ -594,9 +629,14 @@
     const g = cv.getContext("2d");
     g.clearRect(0, 0, w, h);
 
-    g.fillStyle = "#0f1216";
+    const cTrack = cssVar("--track", "#0f1216");
+    const cLine = cssVar("--track-line", "#1c2129");
+    const cTop = cssVar("--accent-2", "#ff9a4d");
+    const cBot = cssVar("--accent", "#ff6900");
+
+    g.fillStyle = cTrack;
     g.fillRect(0, 0, w, h);
-    g.strokeStyle = "#1c2129";
+    g.strokeStyle = cLine;
     g.lineWidth = 1;
     for (let hr = 0; hr <= 24; hr += 2) {
       const x = Math.round((hr / 24) * w) + 0.5;
@@ -604,30 +644,35 @@
     }
     if (!S.segs.length) { S.blocks = []; return; }
 
-    // 合并相邻片段（间隔 ≤2 秒视为连续），避免 1 分钟碎片画成 0.75px
+    // 合并相邻片段（间隔 ≤2 秒视为连续），避免 1 分钟碎片画成 0.75px。
+    // 已缓存与未缓存的块分开画：缓存过的更亮，一眼能看出哪些能秒开。
     const blocks = [];
     let cur = null;
     for (const s of S.segs) {
-      if (cur && s.s - cur.e <= 2) cur.e = Math.max(cur.e, s.s + s.t);
-      else { cur = { b: s.s, e: s.s + s.t }; blocks.push(cur); }
+      const e = s.s + s.t;
+      const cached = !!s.cached;
+      if (cur && cur.cached === cached && s.s - cur.e <= 2) cur.e = Math.max(cur.e, e);
+      else { cur = { b: s.s, e, cached }; blocks.push(cur); }
     }
     S.blocks = blocks;
 
     const per = w / DAY;
-    const y = Math.round(h * 0.22);
-    const bh = Math.round(h * 0.56);
+    const y = Math.round(h * 0.2);
+    const bh = Math.round(h * 0.6);
     for (const blk of blocks) {
       const x = blk.b * per;
       const bw = Math.max(1.5 * dpr, (blk.e - blk.b) * per);
       const grad = g.createLinearGradient(0, y, 0, y + bh);
-      grad.addColorStop(0, "#ff8f3f");
-      grad.addColorStop(1, "#e25600");
+      grad.addColorStop(0, cTop);
+      grad.addColorStop(1, cBot);
+      g.globalAlpha = blk.cached ? 1 : 0.45;
       g.fillStyle = grad;
       g.beginPath();
       if (g.roundRect) g.roundRect(x, y, bw, bh, Math.min(3 * dpr, bw / 2));
       else g.rect(x, y, bw, bh);
       g.fill();
     }
+    g.globalAlpha = 1;
   }
 
   function paintCursor(absSec) {
@@ -886,6 +931,8 @@
     S.date = null;
     el.dayLabel.textContent = "—";
     el.dayMeta.textContent = "";
+    el.miDate.textContent = "—";
+    el.miFacts.innerHTML = "";
     el.days.innerHTML = "";
     el.tlClock.textContent = "--:--:--";
     el.tlGap.textContent = "";
@@ -909,6 +956,58 @@
     el.fsPath.addEventListener("keydown", (e) => {
       if (e.key === "Enter") fsGoto(el.fsPath.value.trim());
     });
+  }
+
+  /* ------------------------------- 配色 ----------------------------- */
+  const THEMES = [
+    { id: "amber",  name: "琥珀", dot: "#ff6900" },
+    { id: "aurora", name: "冰川", dot: "#2f9bff" },
+    { id: "jade",   name: "翡翠", dot: "#12b981" },
+    { id: "violet", name: "霓虹", dot: "#a259ff" },
+    { id: "rose",   name: "玫瑰", dot: "#ff3d71" },
+    { id: "paper",  name: "素白", dot: "#eef1f5" },
+  ];
+
+  function applyTheme(id, persist) {
+    const t = THEMES.find((x) => x.id === id) || THEMES[0];
+    document.documentElement.dataset.theme = t.id;
+    if (persist !== false) {
+      try { localStorage.setItem("cam.theme", t.id); } catch (_) {}
+    }
+    el.themeGrid.querySelectorAll(".theme-item").forEach((b) =>
+      b.classList.toggle("on", b.dataset.id === t.id));
+    // 时间轴是 canvas 画的，颜色得重画一遍
+    drawTimeline();
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = cssVar("--bg", "#0a0c0f");
+  }
+
+  function bindTheme() {
+    el.themeGrid.innerHTML = THEMES.map((t) => `
+      <button class="theme-item" data-id="${t.id}">
+        <span class="theme-dot" style="background:${t.dot}"></span>${t.name}
+      </button>`).join("");
+
+    el.themeGrid.onclick = (e) => {
+      const b = e.target.closest(".theme-item");
+      if (b) applyTheme(b.dataset.id);
+    };
+    el.themeBtn.onclick = (e) => {
+      e.stopPropagation();
+      el.themePop.hidden = !el.themePop.hidden;
+    };
+    document.addEventListener("click", (e) => {
+      if (el.themePop.hidden) return;
+      if (e.target instanceof Element && e.target.closest(".theme-wrap")) return;
+      el.themePop.hidden = true;
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !el.themePop.hidden) el.themePop.hidden = true;
+    });
+
+    let saved = "";
+    try { saved = localStorage.getItem("cam.theme") || ""; } catch (_) {}
+    applyTheme(saved || "amber", false);
   }
 
   /* ------------------------------- 事件 ----------------------------- */
@@ -1117,6 +1216,7 @@
 
   /* ------------------------------- 启动 ----------------------------- */
   renderScale();
+  bindTheme();
   bindVideo();
   bindControls();
   bindFilter();
@@ -1129,7 +1229,7 @@
 
   // 调试出口：控制台可查状态、可跳转，也方便自动化验证
   window.__cam = {
-    S, seekTo, startSeg, currentAbs, selectDay,
+    S, seekTo, startSeg, currentAbs, selectDay, applyTheme,
     openFolderPicker, fsGoto, applyFilter, pollScan,
   };
 })();

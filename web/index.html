@@ -2,8 +2,16 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0c0f">
 <title>摄像头回放台</title>
+<script>
+/* 首屏前应用配色，避免闪一下默认色 */
+try {
+  var t = localStorage.getItem("cam.theme");
+  if (t) document.documentElement.dataset.theme = t;
+} catch (e) {}
+</script>
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📹</text></svg>">
 </head>
@@ -13,7 +21,13 @@
 
   <aside class="side" id="side">
     <div class="brand">
-      <div class="brand-dot"></div>
+      <div class="brand-dot" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="6" width="13" height="12" rx="2.5"/>
+          <path d="M15 10.5l6-3.5v10l-6-3.5"/>
+        </svg>
+      </div>
       <div class="brand-txt">
         <b>回放台</b>
         <span id="camName">读取中…</span>
@@ -67,6 +81,19 @@
           <span>定位</span>
           <input id="jumpTime" type="text" placeholder="16:20" autocomplete="off" spellcheck="false">
         </label>
+        <div class="theme-wrap">
+          <button class="icon-btn" id="btnTheme" title="配色">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+                 stroke-width="1.8" stroke-linecap="round">
+              <circle cx="12" cy="12" r="8.6"/>
+              <path d="M12 3.4a8.6 8.6 0 000 17.2z" fill="currentColor" stroke="none" opacity=".55"/>
+            </svg>
+          </button>
+          <div class="theme-pop" id="themePop" hidden>
+            <div class="theme-pop-title">界面配色</div>
+            <div class="theme-grid" id="themeGrid"></div>
+          </div>
+        </div>
         <button class="icon-btn" id="btnExport" title="导出为单个 mp4">⤓</button>
       </div>
     </header>
@@ -86,6 +113,12 @@
         <div class="player-badge" id="playerBadge"></div>
         <div class="player-osd" id="osd"></div>
       </div>
+    </section>
+
+    <section class="mobile-info">
+      <div class="mi-day" id="miDate">—</div>
+      <ul class="mi-facts" id="miFacts"></ul>
+      <p class="mi-tip">点时间轴任意位置开始播放<br>落在空档会自动跳到下一段有录像的位置</p>
     </section>
 
     <section class="timeline-wrap">

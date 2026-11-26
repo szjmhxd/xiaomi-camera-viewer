@@ -1,14 +1,13 @@
 #!/bin/bash
-# 安装完成：按平台下发的路径生成 compose 挂载，准备缓存目录。
+# 安装完成：把「授权目录」写进 compose 的 .env，准备缓存目录。
 set -u
 
 LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
-APPNAME="${TRIM_APPNAME:-xiaomi-cam-viewer}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-# 挂载路径由平台环境变量决定，写死不可靠
-if [ -x "${HERE}/apply_mounts" ]; then
-    "${HERE}/apply_mounts"
+# 授权目录（TRIM_DATA_ACCESSIBLE_PATHS）→ .env 的 NAS_DIR，compose 变量替换成挂载源
+if [ -x "${HERE}/sync_env" ]; then
+    "${HERE}/sync_env"
 fi
 
 VAR="${TRIM_PKGVAR:-}"

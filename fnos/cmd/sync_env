@@ -1,0 +1,116 @@
+#!/bin/bash
+# 把 fnOS「授权目录」的结果写成 compose 的 .env 变量。
+#
+# 官方机制是：用户在 应用设置 → 授权目录 勾选文件夹后，平台把路径放进系统变量
+# TRIM_DATA_ACCESSIBLE_PATHS（冒号分隔，见 developer.fnnas.com 环境变量章节），
+# 官方文档同时明确它「可能为空」。所以这里取第一个真实存在的目录写进
+# compose 同目录 .env 的 NAS_DIR，compose 用 ${NAS_DIR:-...} 做变量替换。
+# compose 文件本身永远不动，只写 .env。
+#
+#   TRIM_DATA_ACCESSIBLE_PATHS  平台下发的授权路径，冒号分隔
+#   TRIM_PKGVAR                 应用数据目录；nas_dir.list 持久化上次的授权结果，
+#                               平台没下发时（比如升级时机）用它恢复
+#
+# 安装、升级、授权变更三个时机各调用一次。全部 TRIM_* 变量记进
+# ${TRIM_PKGVAR}/sync_env.log，出问题先看这个文件。
+#
+# 路径解析全部用 bash 内建（不 fork），分隔符只认 , ; : 和换行——路径里的空格不拆。
+set -u
+
+APPNAME="${TRIM_APPNAME:-xiaomi-cam-viewer}"
+PKGVAR="${TRIM_PKGVAR:-/usr/local/apps/@appdata/${APPNAME}}"
+PLOG="${PKGVAR}/sync_env.log"
+mkdir -p "$PKGVAR" 2>/dev/null || true
+log() {
+    printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$PLOG" 2>/dev/null || true
+    [ -n "${TRIM_TEMP_LOGFILE:-}" ] && printf '%s\n' "$*" >>"$TRIM_TEMP_LOGFILE" 2>/dev/null || true
+    return 0
+}
+
+log "---- sync_env 开始 ----"
+for _v in TRIM_APPNAME TRIM_PKGVAR TRIM_COMPOSE_DIR TRIM_DATA_ACCESSIBLE_PATHS \
+          TRIM_DATA_SHARE_PATHS TRIM_UID TRIM_GID TRIM_TEMP_LOGFILE; do
+    eval "_val=\${${_v}:-}"
+    [ -n "$_val" ] && log "env: ${_v}=${_val}"
+done
+
+# ---- 定位 compose 项目目录（.env 必须和 docker-compose.yaml 同目录）----
+DIR="${TRIM_COMPOSE_DIR:-}"
+if [ -z "$DIR" ]; then
+    # fnOS 实测把 docker-project 放在 /vol1/@appcenter/<app>/docker/（官方文档
+    # 写的 /var/apps/<app>/app/docker 是旧说法），两处都找，再兜底 find
+    for cand in "/vol1/@appcenter/${APPNAME}/docker" \
+                "/var/apps/${APPNAME}/docker" \
+                "/var/apps/${APPNAME}/app/docker"; do
+        if [ -f "${cand}/docker-compose.yaml" ]; then
+            DIR="$cand"
+            break
+        fi
+    done
+fi
+if [ -z "$DIR" ]; then
+    C="$(find "/vol1/@appcenter/${APPNAME}" "/var/apps/${APPNAME}" \
+          -name 'docker-compose.y*ml' -type f 2>/dev/null | head -1)"
+    [ -n "$C" ] && DIR="$(dirname "$C")"
+fi
+if [ -z "$DIR" ]; then
+    log "找不到 docker-compose.yaml，跳过 .env 生成"
+    exit 0
+fi
+log "compose 目录: ${DIR}"
+
+# ---- 解析授权目录：平台变量优先，空则用上次持久化的 ----
+RAW="${TRIM_DATA_ACCESSIBLE_PATHS:-}"
+if [ -n "$RAW" ]; then
+    printf '%s' "$RAW" >"${PKGVAR}/nas_dir.list" 2>/dev/null || true
+else
+    RAW="$(cat "${PKGVAR}/nas_dir.list" 2>/dev/null || true)"
+    [ -n "$RAW" ] && log "TRIM_DATA_ACCESSIBLE_PATHS 为空，改用 nas_dir.list 里的上次值"
+fi
+
+# 防御：平台偶发 JSON 数组格式，去掉残留的括号和引号
+RAW="${RAW//\[/}"
+RAW="${RAW//\]/}"
+RAW="${RAW//\"/}"
+RAW="${RAW//\'/}"
+# 分隔符 , ; : 统一成换行，逐行处理（纯 bash，路径含空格不拆）
+RAW="${RAW//,/$'\n'}"
+RAW="${RAW//;/$'\n'}"
+RAW="${RAW//:/$'\n'}"
+
+TARGET=""
+COUNT=0
+rest="$RAW"
+while [ -n "$rest" ]; do
+    case "$rest" in
+        *$'\n'*) p="${rest%%$'\n'*}"; rest="${rest#*$'\n'}" ;;
+        *)       p="$rest"; rest="" ;;
+    esac
+    # 去掉首尾空白
+    p="${p#"${p%%[![:space:]]*}"}"
+    p="${p%"${p##*[![:space:]]}"}"
+    [ -n "$p" ] || continue
+    COUNT=$((COUNT + 1))
+    if [ ! -d "$p" ]; then
+        log "授权路径不存在，跳过: ${p}"
+        continue
+    fi
+    if [ -z "$TARGET" ]; then
+        TARGET="$p"
+    else
+        log "注意：授权了多个目录，本应用只挂第一个（${TARGET}）。多个录像目录请勾选它们共同的父目录。"
+        break
+    fi
+done
+
+ENVF="${DIR}/.env"
+if [ -n "$TARGET" ]; then
+    printf 'NAS_DIR=%s\n' "$TARGET" >"$ENVF" 2>/dev/null || true
+    log "已写入 ${ENVF}: NAS_DIR=${TARGET}（共解析到 ${COUNT} 个授权目录）"
+else
+    # 没有任何授权：.env 不写 NAS_DIR，compose 退回默认的应用共享目录
+    rm -f "$ENVF" 2>/dev/null || true
+    log "没有可用的授权目录，${ENVF} 已清除；容器里 /nas 退回应用共享目录"
+fi
+
+exit 0

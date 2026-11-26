@@ -1,10 +1,10 @@
 #!/bin/bash
-# 升级完成：新包里的 compose 是模板，挂载路径要重新生成一次。
+# 升级完成：新包里的 compose 是模板，把持久化的授权目录重新写进 .env。
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-if [ -x "${HERE}/apply_mounts" ]; then
-    "${HERE}/apply_mounts"
+if [ -x "${HERE}/sync_env" ]; then
+    "${HERE}/sync_env"
 fi
 
 VAR="${TRIM_PKGVAR:-}"

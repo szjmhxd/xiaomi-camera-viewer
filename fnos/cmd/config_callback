@@ -1,11 +1,12 @@
 #!/bin/bash
 # 授权目录变更：用户在「应用设置 → 授权目录」勾选后平台会调到这里。
-# 重新生成挂载段，再让容器按新挂载重建一次。
+# 把新授权写进 compose 同目录的 .env（NAS_DIR），再重建容器让挂载生效。
+# compose 文件本身永远不动。
 set -u
 
 APPNAME="${TRIM_APPNAME:-xiaomi-cam-viewer}"
 PKGVAR="${TRIM_PKGVAR:-/usr/local/apps/@appdata/${APPNAME}}"
-PLOG="${PKGVAR}/apply_mounts.log"
+PLOG="${PKGVAR}/config_callback.log"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "$PKGVAR" 2>/dev/null || true
@@ -14,26 +15,40 @@ env | grep '^TRIM_' | sort | while IFS= read -r line; do
     printf '%s env: %s\n' "$(date '+%F %T')" "$line" >>"$PLOG" 2>/dev/null || true
 done
 
-if [ -x "${HERE}/apply_mounts" ]; then
-    "${HERE}/apply_mounts"
+# 定位 compose 项目目录（.env 必须和 docker-compose.yaml 同目录）
+DIR="${TRIM_COMPOSE_DIR:-}"
+if [ -z "$DIR" ]; then
+    for cand in "/vol1/@appcenter/${APPNAME}/docker" \
+                "/var/apps/${APPNAME}/docker" \
+                "/var/apps/${APPNAME}/app/docker"; do
+        if [ -f "${cand}/docker-compose.yaml" ]; then
+            DIR="$cand"
+            break
+        fi
+    done
+fi
+if [ -z "$DIR" ]; then
+    C="$(find "/vol1/@appcenter/${APPNAME}" "/var/apps/${APPNAME}" \
+          -name 'docker-compose.y*ml' -type f 2>/dev/null | head -1)"
+    [ -n "$C" ] && DIR="$(dirname "$C")"
 fi
 
-COMPOSE=""
-for cand in "/var/apps/${APPNAME}/docker/docker-compose.yaml" \
-            "/var/apps/${APPNAME}/app/docker/docker-compose.yaml"; do
-    if [ -f "$cand" ]; then
-        COMPOSE="$cand"
-        break
+# 写 .env（NAS_DIR）；sync_env 自己也会找 compose 目录，这里把结果直接传给它避免两边不一致
+if [ -x "${HERE}/sync_env" ]; then
+    if [ -n "$DIR" ]; then
+        TRIM_COMPOSE_DIR="$DIR" "${HERE}/sync_env"
+    else
+        "${HERE}/sync_env"
     fi
-done
+fi
 
 # 容器由飞牛的 docker-project 托管，这里用同一个项目名重建，
-# 目的只是让新的挂载生效；失败也不影响应用本身，只是需要手动重启一次。
-if command -v docker >/dev/null 2>&1 && [ -n "$COMPOSE" ]; then
-    if docker compose -p "$APPNAME" -f "$COMPOSE" up -d --force-recreate --remove-orphans >>"$PLOG" 2>&1; then
-        printf '%s config_callback: 挂载已更新，容器已重建\n' "$(date '+%F %T')" >>"$PLOG" 2>/dev/null || true
+# 目的只是让新挂载生效；失败也不影响应用本身，只是需要手动重启一次。
+if command -v docker >/dev/null 2>&1 && [ -n "$DIR" ] && [ -f "${DIR}/docker-compose.yaml" ]; then
+    if docker compose -p "$APPNAME" -f "${DIR}/docker-compose.yaml" up -d --force-recreate --remove-orphans >>"$PLOG" 2>&1; then
+        printf '%s config_callback: .env 已更新，容器已重建\n' "$(date '+%F %T')" >>"$PLOG" 2>/dev/null || true
     else
-        printf '%s config_callback: 挂载已写入，但自动重建没成功。请在应用中心重启「摄像头回放台」让新目录生效。\n' "$(date '+%F %T')" >>"$PLOG" 2>/dev/null || true
+        printf '%s config_callback: .env 已写入，但自动重建没成功。请在应用中心重启「摄像头回放台」让新目录生效。\n' "$(date '+%F %T')" >>"$PLOG" 2>/dev/null || true
     fi
 fi
 

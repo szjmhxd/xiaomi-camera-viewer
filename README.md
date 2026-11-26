@@ -108,10 +108,10 @@ docker compose up -d
 镜像由 GitHub Actions 构建（amd64 + arm64），推 tag 或改主分支都会触发。**首次构建完成后，需要到 GitHub 仓库的 Packages 页面把镜像可见性改成 public**，否则 NAS 拉取会返回 401。不想用现成镜像就本地构建：
 
 ```bash
-docker build -t xiaomi-camera-viewer:1.3.1 .
+docker build -t xiaomi-camera-viewer:1.3.2 .
 ```
 
-然后把 compose 里的 `image:` 换成 `xiaomi-camera-viewer:1.3.1`，或改成 `build: .`。
+然后把 compose 里的 `image:` 换成 `xiaomi-camera-viewer:1.3.2`，或改成 `build: .`。
 
 ### 国内拉取镜像（ghcr.io 被重置）
 
@@ -131,18 +131,18 @@ curl -sI https://ghcr.m.daocloud.io/v2/ | head -1
 
 ```bash
 # 1) 拉
-docker pull ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.1
-#    或 docker pull ghcr.nju.edu.cn/szjmhxd/xiaomi-camera-viewer:1.3.1
+docker pull ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.2
+#    或 docker pull ghcr.nju.edu.cn/szjmhxd/xiaomi-camera-viewer:1.3.2
 
 # 2) 打回原名（关键，否则 compose 认不到）
-docker tag ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.1 \
-           ghcr.io/szjmhxd/xiaomi-camera-viewer:1.3.1
+docker tag ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.2 \
+           ghcr.io/szjmhxd/xiaomi-camera-viewer:1.3.2
 
 # 3) 直接起，本地已有镜像就不会再去拉
 docker compose up -d
 ```
 
-飞牛应用同理：先把镜像拉好并打回原名，再启动应用。在飞牛 Docker 界面手动拉取时，地址直接填 `ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.1`，拉完在镜像列表里重命名即可。
+飞牛应用同理：先把镜像拉好并打回原名，再启动应用。在飞牛 Docker 界面手动拉取时，地址直接填 `ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.2`，拉完在镜像列表里重命名即可。
 
 一点提醒：网上常见的「`/etc/docker/daemon.json` 里配 `registry-mirrors` 做全局加速」，Docker 官方只保证对 `docker.io` 生效，对 `ghcr.io` 不一定管用。**别当主方案**，以前缀替换为准。
 
@@ -154,11 +154,11 @@ docker compose up -d
 
 - **录像放哪（两种，推荐第二种）**：
   1. **放进应用共享目录**：文件管理 → 应用文件 → `xiaomi-cam-viewer/videos`。共享目录和你的录像在同一存储卷时，移动过去是一次 rename，不复制数据（100 GB 也是秒级）。
-  2. **直接授权已有目录（推荐）**：录像已经在别的共享文件夹里不想搬，就在飞牛 → 应用 → 摄像头回放台 → 设置 → **授权目录**，勾选那个文件夹，然后重启应用。它会以只读方式挂进容器的 `/nas/1`、`/nas/2`…，网页里的文件夹选择器直接就能选到。这是 fnOS 官方的目录授权机制，不复制、不占用额外空间。
+  2. **直接授权已有目录（推荐）**：录像已经在别的共享文件夹里不想搬，就在飞牛 → 应用 → 摄像头回放台 → 设置 → **授权目录**，勾选那个文件夹，然后重启应用。它会以只读方式挂进容器的 `/nas`，网页里的文件夹选择器直接就能选到。这是 fnOS 官方的目录授权机制，不复制、不占用额外空间。一次只勾一个文件夹；有多路录像目录就勾它们共同的父目录。
 - **端口 18765**：写在 manifest 的 `service_port` 里，飞牛会自动放行；容器内部仍然是 8765。
 - **缓存**写在应用数据目录，上限 15 GB，升级应用不会丢。卸载只删应用本体，录像和缓存保留。
 
-挂载路径不是写死的：`cmd/apply_mounts` 在安装、升级、改授权目录三个时机，按平台下发的 `TRIM_DATA_SHARE_PATHS` / `TRIM_PKGVAR` / `TRIM_DATA_ACCESSIBLE_PATHS` 重新生成 compose 的挂载段。不同 fnOS 版本共享目录的落盘位置不一样，只有平台变量是准的。
+挂载走的是 fnOS 官方的「授权目录」机制，录像原地不动：用户在应用设置里勾选文件夹后，平台把路径放进系统变量 `TRIM_DATA_ACCESSIBLE_PATHS`（冒号分隔，官方文档明确它可能为空），`cmd/sync_env` 取其中第一个真实存在的目录写进 compose 同目录 `.env` 的 `NAS_DIR=`，compose 再用 `${NAS_DIR:-默认共享目录}` 做变量替换。**compose 文件本身永远不被脚本改写**，只写 `.env`。平台没下发变量时（比如升级时机），用应用数据目录里持久化的 `nas_dir.list` 恢复上次值。实测 fnOS 把 compose 放在 `/vol1/@appcenter/<应用名>/docker/docker-compose.yaml`（不是 `/var/apps/...`），脚本两处都找。多个授权目录只挂第一个，其余的写进日志提醒勾父目录。
 
 工程结构：
 
@@ -167,12 +167,13 @@ docker compose up -d
 | `manifest` | 应用元数据：appname、版本、端口、桌面入口 |
 | `config/resource` | 声明 `docker-project` 和共享目录 `xiaomi-cam-viewer/videos` |
 | `config/privilege` | 运行身份，用应用专用用户 |
-| `app/docker/docker-compose.yaml` | 容器定义，镜像 tag 与 manifest 版本一致，挂载段由脚本生成 |
+| `app/docker/docker-compose.yaml` | 容器定义，镜像 tag 与 manifest 版本一致；挂载源用 `${NAS_DIR:-...}` 变量替换，真实路径写在同目录 `.env` |
 | `app/ui/config` | 桌面入口（iframe 打开 18765 端口） |
 | `cmd/main` | 只实现 `status`，启停交给 fnOS 托管 |
-| `cmd/apply_mounts` | 按平台环境变量生成 compose 挂载段 |
-| `cmd/install_callback` `cmd/upgrade_callback` | 装完 / 升级完调一次 `apply_mounts` |
-| `cmd/config_callback` | 授权目录变更后重建挂载并重启容器 |
+| `cmd/sync_env` | 把「授权目录」结果（`TRIM_DATA_ACCESSIBLE_PATHS`）写进 compose 的 `.env`，compose 文件不动 |
+| `cmd/install_callback` `cmd/upgrade_callback` | 装完 / 升级完调一次 `sync_env` |
+| `cmd/config_callback` | 授权目录变更后重写 `.env` 并重建容器 |
+| `cmd/upgrade_init` | 升级前把旧授权收进 `nas_dir.list`，升级后自动恢复 |
 | `wizard/install` | 安装时的说明页 |
 
 打包需要官方 CLI [fnpack](https://developer.fnnas.com/docs/cli/fnpack) 和 python3：
@@ -180,14 +181,14 @@ docker compose up -d
 ```bash
 cd fnos
 FNPACK=/path/to/fnpack ./build.sh
-# 产物：xiaomi-cam-viewer_1.3.1.fpk
+# 产物：xiaomi-cam-viewer_1.3.2.fpk
 ```
 
 `build.sh` 会从 manifest 读版本号、同步写进 compose 的 `image:` 行再打包，两处不会漂移。把生成的 `.fpk` 传到 NAS，应用中心 → 设置 → 手动安装应用即可。
 
 fnpack 版本有个坑：**1.3.x 打包要求开发者证书**（从飞牛开发者平台申请后 `fnpack cert import` 导入），否则报 `Developer certificate is not configured`；本地自用可以 `FNPACK_FLAGS=--nosign ./build.sh` 跳过签名。1.2.x 不要求证书，个人自装用它最省事。另外 fnpack 的产物落在**当前工作目录**而不是 `--directory` 指定的目录，`build.sh` 已经处理了这一点。
 
-一条限制要提前说：**网页里的文件夹选择器只能看到挂进容器的目录**。默认是 `/videos`（应用共享目录），授权过的目录是 `/nas/1` 起。看不到的地方不是应用偷懒，是 fnOS 的权限模型——应用默认读不到任意 `/vol1/1000/...`，要读就得走「授权目录」这一步。授权是只读的，录像不会被改坏。
+一条限制要提前说：**网页里的文件夹选择器只能看到挂进容器的目录**。默认是 `/videos`（应用共享目录），授权过的目录是 `/nas`。看不到的地方不是应用偷懒，是 fnOS 的权限模型——应用默认读不到任意 `/vol1/1000/...`，要读就得走「授权目录」这一步。授权是只读的，录像不会被改坏。
 
 
 ## 为什么需要服务端转码

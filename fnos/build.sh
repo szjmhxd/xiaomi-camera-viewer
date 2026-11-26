@@ -53,7 +53,9 @@ PY
 chmod +x "$WORK"/cmd/*
 
 echo "打包 ${VERSION} ..."
-"$FNPACK_BIN" build --directory "$WORK"
+# fnpack 的产物落在「当前目录」而不是 --directory（1.2.x/1.3.x 实测如此），
+# 所以切进 WORK 再执行，两种行为都能覆盖到。
+( cd "$WORK" && "$FNPACK_BIN" build --directory "$WORK" )
 
 OUT="$(ls -1t "$WORK"/*.fpk 2>/dev/null | head -1 || true)"
 if [ -z "$OUT" ]; then
@@ -61,5 +63,6 @@ if [ -z "$OUT" ]; then
     exit 1
 fi
 
-cp "$OUT" .
-echo "完成：$(pwd)/$(basename "$OUT")"
+DEST="xiaomi-cam-viewer_${VERSION}.fpk"
+cp "$OUT" "./$DEST"
+echo "完成：$(pwd)/$DEST"

@@ -113,6 +113,39 @@ docker build -t xiaomi-camera-viewer:1.3.1 .
 
 然后把 compose 里的 `image:` 换成 `xiaomi-camera-viewer:1.3.1`，或改成 `build: .`。
 
+### 国内拉取镜像（ghcr.io 被重置）
+
+在国内直连 `ghcr.io` 常见 `read: connection reset by peer`，层下到一半反复 `Retrying`——这是链路问题，不是镜像坏了。用加速源做**前缀替换**即可，路径其余部分不变。
+
+先探活加速站（不下载东西，秒回）：
+
+```bash
+curl -sI https://ghcr.1ms.run/v2/ | head -1
+curl -sI https://ghcr.nju.edu.cn/v2/ | head -1
+curl -sI https://ghcr.m.daocloud.io/v2/ | head -1
+```
+
+`401 Unauthorized` 或 `404 Not Found` 都算站点在线（registry 不带 token 时根路径返回 401 是正常的）；只有超时或拒绝连接才说明这个站不可用。
+
+换个前缀拉，拉完打回原名，compose 就不用改：
+
+```bash
+# 1) 拉
+docker pull ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.1
+#    或 docker pull ghcr.nju.edu.cn/szjmhxd/xiaomi-camera-viewer:1.3.1
+
+# 2) 打回原名（关键，否则 compose 认不到）
+docker tag ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.1 \
+           ghcr.io/szjmhxd/xiaomi-camera-viewer:1.3.1
+
+# 3) 直接起，本地已有镜像就不会再去拉
+docker compose up -d
+```
+
+飞牛应用同理：先把镜像拉好并打回原名，再启动应用。在飞牛 Docker 界面手动拉取时，地址直接填 `ghcr.1ms.run/szjmhxd/xiaomi-camera-viewer:1.3.1`，拉完在镜像列表里重命名即可。
+
+一点提醒：网上常见的「`/etc/docker/daemon.json` 里配 `registry-mirrors` 做全局加速」，Docker 官方只保证对 `docker.io` 生效，对 `ghcr.io` 不一定管用。**别当主方案**，以前缀替换为准。
+
 ## 飞牛 fnOS 应用
 
 `fnos/` 是可直接打包成 `.fpk` 的工程，用 fnOS 的 `docker-project` 托管容器。装完后桌面会出现图标，点开就是同一个页面，不需要自己写 compose、也不用手动开端口。

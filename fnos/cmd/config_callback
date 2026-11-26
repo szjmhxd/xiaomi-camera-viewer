@@ -3,9 +3,16 @@
 # 重新生成挂载段，再让容器按新挂载重建一次。
 set -u
 
-LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
 APPNAME="${TRIM_APPNAME:-xiaomi-cam-viewer}"
+PKGVAR="${TRIM_PKGVAR:-/usr/local/apps/@appdata/${APPNAME}}"
+PLOG="${PKGVAR}/apply_mounts.log"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+mkdir -p "$PKGVAR" 2>/dev/null || true
+printf '%s config_callback 被调用\n' "$(date '+%F %T')" >>"$PLOG" 2>/dev/null || true
+env | grep '^TRIM_' | sort | while IFS= read -r line; do
+    printf '%s env: %s\n' "$(date '+%F %T')" "$line" >>"$PLOG" 2>/dev/null || true
+done
 
 if [ -x "${HERE}/apply_mounts" ]; then
     "${HERE}/apply_mounts"
@@ -23,10 +30,10 @@ done
 # 容器由飞牛的 docker-project 托管，这里用同一个项目名重建，
 # 目的只是让新的挂载生效；失败也不影响应用本身，只是需要手动重启一次。
 if command -v docker >/dev/null 2>&1 && [ -n "$COMPOSE" ]; then
-    if docker compose -p "$APPNAME" -f "$COMPOSE" up -d --remove-orphans >>"$LOG" 2>&1; then
-        echo "config_callback: 挂载已更新，容器已重建" >>"$LOG"
+    if docker compose -p "$APPNAME" -f "$COMPOSE" up -d --force-recreate --remove-orphans >>"$PLOG" 2>&1; then
+        printf '%s config_callback: 挂载已更新，容器已重建\n' "$(date '+%F %T')" >>"$PLOG" 2>/dev/null || true
     else
-        echo "config_callback: 挂载已写入，但自动重建没成功。请在应用中心重启「摄像头回放台」让新目录生效。" >>"$LOG"
+        printf '%s config_callback: 挂载已写入，但自动重建没成功。请在应用中心重启「摄像头回放台」让新目录生效。\n' "$(date '+%F %T')" >>"$PLOG" 2>/dev/null || true
     fi
 fi
 

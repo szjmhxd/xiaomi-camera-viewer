@@ -1,0 +1,15 @@
+.git
+.github
+.gitignore
+.gitattributes
+__pycache__
+*.py[cod]
+*.md
+docs
+fnos
+cache
+.camviewer-cache
+*.log
+run.bat
+run.sh
+LICENSE

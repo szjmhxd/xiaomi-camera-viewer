@@ -1,0 +1,22 @@
+#!/bin/bash
+# 容器的启停由飞牛按 config/resource 里的 docker-project 声明托管，
+# 因此这里只实现运行状态查询，避免和平台重复操作同一个 compose 项目。
+set -u
+
+CONTAINER="xiaomi-cam-viewer"
+
+case "${1:-}" in
+    start|stop)
+        exit 0
+        ;;
+    status)
+        if docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -q '^true$'; then
+            exit 0
+        fi
+        exit 3
+        ;;
+    *)
+        echo "usage: $0 {start|stop|status}" >&2
+        exit 1
+        ;;
+esac

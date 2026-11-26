@@ -41,7 +41,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 # 米家 SD 卡文件名：<当天小时>H? 实际为 <分钟内分钟>M<秒>S_<unix 起始时间戳>.mp4
 NAME_RE = re.compile(r"^(\d{1,3})M(\d{1,2})S_(\d{9,11})\.mp4$", re.I)
@@ -207,6 +207,15 @@ SKIP_DIRS = {
 }
 
 
+# 服务器/容器里常见的一级挂载点；/proc/mounts 里的一堆系统挂载要排除掉
+SYSTEM_MOUNT_HINTS = ("/videos", "/data", "/recordings", "/cache")
+_SYS_MOUNT_PREFIX = (
+    "/proc", "/sys", "/dev", "/run", "/tmp", "/etc", "/boot", "/usr",
+    "/lib", "/lib64", "/bin", "/sbin", "/snap", "/var/lib", "/var/cache",
+    "/var/log", "/var/run", "/var/tmp",
+)
+
+
 def list_drives() -> list[dict]:
     """列出盘符。Windows 走 GetLogicalDrives 位掩码，比逐个 exists() 快得多，
     也不会在掉线的映射盘上卡住。"""
@@ -235,15 +244,50 @@ def list_drives() -> list[dict]:
         out.append({"path": "/", "name": "/", "kind": "local"})
         home = str(Path.home())
         out.append({"path": home, "name": "~", "kind": "local"})
+        seen = {"/", home}
         for mnt in ("/mnt", "/media", "/Volumes"):
             try:
                 for name in sorted(os.listdir(mnt)):
                     p = os.path.join(mnt, name)
-                    if os.path.isdir(p):
+                    if os.path.isdir(p) and p not in seen:
+                        seen.add(p)
                         out.append({"path": p, "name": name, "kind": "local"})
             except OSError:
                 pass
+        # 容器里没有盘符，录像目录通常直接 bind mount 到 /videos、/data 这类一级路径。
+        # 除了固定候选，再把 /proc/mounts 里非系统的挂载点列出来，页面里才有得选。
+        for p in SYSTEM_MOUNT_HINTS + tuple(_linux_mount_points()):
+            if p not in seen and os.path.isdir(p):
+                seen.add(p)
+                out.append({"path": p, "name": p, "kind": "local"})
     return out
+
+
+def _linux_mount_points(path: str = "/proc/mounts") -> list[str]:
+    """读 /proc/mounts，返回看起来像"数据盘"的挂载点（最多三层深）。
+
+    Docker 容器里 bind mount 进来的目录会出现在这里，用户就能在文件夹选择器
+    里直接看到 /videos 之外自己挂的其它目录。
+    """
+    pts: list[str] = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fp:
+            for line in fp:
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                mp = parts[1].replace("\\040", " ").replace("\\011", "\t")
+                if not mp.startswith("/") or mp == "/":
+                    continue
+                if any(mp == p or mp.startswith(p + "/") for p in _SYS_MOUNT_PREFIX):
+                    continue
+                if mp.count("/") > 3:
+                    continue
+                if mp not in pts:
+                    pts.append(mp)
+    except OSError:
+        pass
+    return sorted(pts)
 
 
 def parent_of(path: Path) -> str | None:

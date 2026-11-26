@@ -1,0 +1,13 @@
+{
+  ".url": {
+    "xiaomi-cam-viewer.main": {
+      "title": "摄像头回放台",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "protocol": "http",
+      "port": "18765",
+      "url": "/",
+      "allUsers": true
+    }
+  }
+}

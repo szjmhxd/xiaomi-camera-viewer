@@ -29,7 +29,7 @@ python server.py
 python server.py --root "D:/xiaomi_camera_videos"
 ```
 
-只依赖 Python 3.9+ 和系统里的 ffmpeg，没有 pip 依赖。
+只依赖 Python 3.9+ 和系统里的 ffmpeg，没有 pip 依赖。不想装 Python 也行，仓库自带镜像：`docker compose up -d`，见 [Docker 部署](#docker-部署)。
 
 ---
 
@@ -64,6 +64,91 @@ python server.py --root "D:/xiaomi_camera_videos"
 
 > iOS Safari 支持多选视频，但不支持选整个文件夹；Android Chrome 也一样。要整目录备份还是用数据线拷到电脑上。
 
+## Docker 部署
+
+镜像里自带 ffmpeg，宿主机不需要 Python，也不用在 NAS 上装任何转码工具。仓库根目录的 `docker-compose.yml` 就是给 NAS 准备的，改一行路径即可：
+
+```yaml
+services:
+  xiaomi-cam:
+    image: ghcr.io/szjmhxd/xiaomi-camera-viewer:latest
+    container_name: xiaomi-cam-viewer
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      - /vol1/1000/xiaomi_camera_videos:/videos:ro   # 改成你的录像目录
+      - ./cache:/cache
+```
+
+```bash
+docker compose up -d
+# 打开 http://NAS地址:8765/
+```
+
+只有两个挂载点，职责分得很清楚：
+
+| 挂载 | 作用 | 能否省略 |
+| --- | --- | --- |
+| `录像目录:/videos` | 唯一的数据来源，建议 `:ro` 只读 | 不能 |
+| `缓存目录:/cache` | 转码产物，删掉只影响二次播放速度 | 能，但容器重建后会重新转码 |
+
+容器内以 `/videos` 作为默认根目录。页面里的「选择文件夹」浏览的是**容器内**的路径，所以想切换目录就在 compose 里多挂几个，它们会自动出现在磁盘列表里。
+
+环境变量（都有默认值，一般不用改）：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `CAM_ROOT` | `/videos` | 录像根目录 |
+| `CAM_CACHE` | `/cache` | 缓存目录 |
+| `CAM_PORT` | `8765` | 容器内监听端口，改这里要同步改 compose 的端口映射 |
+| `CAM_CACHE_MAX_GB` | `20` | 缓存上限，NAS 上建议 10–20 |
+| `CAM_HEIGHT` / `CAM_FPS` / `CAM_CRF` | `720` / `15` / `26` | 转码参数，CPU 弱的 NAS 可以降到 480p |
+
+镜像由 GitHub Actions 构建（amd64 + arm64），推 tag 或改主分支都会触发。**首次构建完成后，需要到 GitHub 仓库的 Packages 页面把镜像可见性改成 public**，否则 NAS 拉取会返回 401。不想用现成镜像就本地构建：
+
+```bash
+docker build -t xiaomi-camera-viewer:1.3.0 .
+```
+
+然后把 compose 里的 `image:` 换成 `xiaomi-camera-viewer:1.3.0`，或改成 `build: .`。
+
+## 飞牛 fnOS 应用
+
+`fnos/` 是可直接打包成 `.fpk` 的工程，用 fnOS 的 `docker-project` 托管容器。装完后桌面会出现图标，点开就是同一个页面，不需要自己写 compose、也不用手动开端口。
+
+安装后有两件事要清楚：
+
+- **录像放哪**：文件管理 → 应用共享 → `xiaomi-cam-viewer/videos`。共享目录和用户目录在同一存储卷时，移动过去是一次 rename，不复制数据（100 GB 的录像也是秒级）。
+- **端口 18765**：写在 manifest 的 `service_port` 里，飞牛会自动放行；容器内部仍然是 8765。
+
+缓存写在应用数据目录（`/var/apps/xiaomi-cam-viewer/var/cache`），上限 15 GB，升级应用不会丢。卸载只删应用本体，录像和缓存保留。
+
+工程结构：
+
+| 文件 | 作用 |
+| --- | --- |
+| `manifest` | 应用元数据：appname、版本、端口、桌面入口 |
+| `config/resource` | 声明 `docker-project` 和共享目录 `xiaomi-cam-viewer/videos` |
+| `config/privilege` | 运行身份，用应用专用用户 |
+| `app/docker/docker-compose.yaml` | 容器定义，镜像 tag 与 manifest 版本一致 |
+| `app/ui/config` | 桌面入口（iframe 打开 18765 端口） |
+| `cmd/main` | 只实现 `status`，启停交给 fnOS 托管 |
+| `wizard/install` | 安装时的说明页 |
+
+打包需要官方 CLI [fnpack](https://developer.fnnas.com/docs/cli/fnpack) 和 python3：
+
+```bash
+cd fnos
+FNPACK=/path/to/fnpack ./build.sh
+# 产物：xiaomi-cam-viewer_1.3.0.fpk
+```
+
+`build.sh` 会从 manifest 读版本号、同步写进 compose 的 `image:` 行再打包，两处不会漂移。把生成的 `.fpk` 传到 NAS，应用中心 → 设置 → 手动安装应用即可。
+
+一条限制要提前说：**飞牛应用默认只能读取自己声明的共享目录**，不能直接读 `/vol1/1000/...` 里的任意目录。这是 fnOS 的权限模型决定的，不是应用偷懒——绕过它就得让容器以 root 挂载整个存储卷，代价太大。所以录像要么放进共享目录，要么在应用设置里改挂载路径。
+
+
 ## 为什么需要服务端转码
 
 这是整个方案绕不开的前提。米家这批录像的编码：
@@ -95,13 +180,13 @@ b88880054a3f/2026102516/20M13S_1792916413.mp4
 
 ## 功能
 
-- **24 小时时间轴**：橙色区块表示有录像的时段，空白就是真的没录。**已缓存的时段颜色更亮**，一眼看出哪些能秒开。点击任意位置开始播放，落在空档会自动落到下一个有录像的点并提示跳过了多久。
+- **24 小时时间轴**：橙色区块表示有录像的时段，空白就是真的没录。**已缓存的时段颜色更亮**，一眼看出哪些能秒开。只有区块覆盖的位置能点——鼠标移上去光标变禁止符号，点下去提示「这个时间点没有录像」；拖动时经过空档游标停住，松手不会落到空白处。跨空档只在自动连播时发生，并且会明确提示跳过了多久。
 - **选日期不自动播**：点日期只换索引、抽一帧当封面，播放器不解码、也不产生转码任务。点时间轴上的某一刻（或顶栏定位、按播放键）才起播。
 - **跨片段连播**：播完一段自动接下一段，不需要手动点。切换瞬间保留上一帧画面，避免黑屏。
 - **日期筛选**：日子多了翻列表很难受。支持文本筛（输入 `11-1` 只剩 11-10 到 11-19）和快捷条件（近 7 天 / 近 30 天 / 录像超过 2 小时的日子），右侧实时显示筛掉了多少天。列表按月份分组，每行带星期。
 - **六套配色**：琥珀 / 冰川 / 翡翠 / 霓虹 / 玫瑰 / 素白，右上角调色板切换，选择记在浏览器本地，不影响服务端。
 - **倍数播放**：右下角下拉选 0.5×–8×，键盘 `1`–`9` 同样生效，两边状态同步。
-- **精确定位**：顶栏输入 `16:20` 就能跳到该时刻。
+- **精确定位**：顶栏输入 `16:20` 就能跳到该时刻；该时刻没有录像时不会跳，直接告诉你下一段从几点开始。
 - **截图**：当前帧存 PNG，文件名带日期和时间。
 - **导出**：把指定区间的片段拼接转码成一个 mp4，流式下载，不用等整个文件生成完。
 - **续播记忆**：关掉页面再打开，回到上次的目录、日期和位置。
@@ -139,6 +224,7 @@ b88880054a3f/2026102516/20M13S_1792916413.mp4
 Windows  %LOCALAPPDATA%\XiaomiCamViewer\cache
 Linux    ~/.cache/xiaomi-camera-viewer
 macOS    ~/Library/Caches/XiaomiCamViewer
+容器     /cache（对应宿主机上你挂的那个目录）
 ```
 
 录像通常放在 NAS 或写满的存储卡上，那里既慢又可能一点空间都没有——把缓存放过去会直接失败。缓存默认上限 20 GB，超出后按最久未用淘汰。
@@ -206,16 +292,22 @@ python server.py --host 127.0.0.1
 - **一次只看一个目录**。同时有多个录像根目录时，需要在网页里切换，不能并列展示。
 - **HEVC 源仍然要全量转码**。如果浏览器和系统支持 HEVC 硬解（部分 Windows 11 + Edge 环境），理论上可以跳过转码，但 `canPlayType` 的可靠性太差，没做这条路。
 - **上传的文件不参与缓存淘汰**。转码缓存按 20 GB 上限 LRU 淘汰，但 `uploads/` 下的原始文件一直留着，长期用要自己清。
+- **容器版只能看到挂载进容器的目录**。页面里的文件夹选择器浏览的是容器内文件系统，想切到另一个录像目录，要么在 compose 里多挂一个，要么重新起容器。原生运行时没有这个限制。
 
 ## 目录
 
 ```
-server.py          服务端：索引、转码、缓存、HTTP
-web/index.html     页面结构
-web/app.js         时间轴渲染、连播状态机、交互、配色
-web/style.css      界面与六套配色变量
-docs/              README 配图
-run.bat / run.sh   启动脚本
+server.py                服务端：索引、转码、缓存、HTTP
+web/index.html           页面结构
+web/app.js               时间轴渲染、连播状态机、交互、配色
+web/style.css            界面与六套配色变量
+Dockerfile               容器镜像（自带 ffmpeg）
+docker-compose.yml       NAS 部署模板
+docker-entrypoint.sh     环境变量 → 启动参数
+fnos/                    飞牛 fnOS 应用工程（.fpk）
+.github/workflows/       镜像构建与发布
+docs/                    README 配图
+run.bat / run.sh         本地启动脚本
 ```
 
 ## 许可

@@ -685,25 +685,38 @@
     return Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * DAY;
   }
 
+  /* 空档不接受定位：点击落到没有录像的位置时不跳转，拖动经过空档时游标停住，
+   * 避免"点了个空白处却跳到半小时后"的错觉。连播跨段仍由 timeupdate 负责。 */
   function initTimeline() {
     let dragging = false;
+    let lastEmptyToast = -9999;
+
+    function rejected(T) {
+      if (Math.abs(T - lastEmptyToast) > 40) {
+        lastEmptyToast = T;
+        toast("这个时间点没有录像", 1400);
+      }
+    }
 
     el.tl.addEventListener("pointerdown", (e) => {
       if (!S.segs.length) return;
+      const T = tlXToSec(e.clientX);
+      if (indexAt(T) < 0) { rejected(T); return; }
       dragging = true;
       el.tl.setPointerCapture && el.tl.setPointerCapture(e.pointerId);
-      seekTo(tlXToSec(e.clientX), true);
+      seekTo(T, true);
     });
 
     el.tl.addEventListener("pointermove", (e) => {
       const r = el.tl.getBoundingClientRect();
       const T = tlXToSec(e.clientX);
+      const has = indexAt(T) >= 0;
       el.hover.style.left = `${e.clientX - r.left}px`;
       el.hover.classList.add("show");
-      const has = indexAt(T) >= 0;
       el.hover.innerHTML =
-        `<b>${hms(T)}</b><span class="tl-hover-tag">${has ? "有录像" : "无录像"}</span>`;
-      if (dragging) seekTo(T, S.playing);
+        `<b>${hms(T)}</b><span class="tl-hover-tag${has ? "" : " off"}">${has ? "有录像" : "无录像"}</span>`;
+      el.tl.classList.toggle("no-hit", !has);
+      if (dragging && has) seekTo(T, S.playing);
     });
 
     const stop = () => { dragging = false; };
@@ -712,6 +725,7 @@
     el.tl.addEventListener("pointerleave", () => {
       dragging = false;
       el.hover.classList.remove("show");
+      el.tl.classList.remove("no-hit");
     });
   }
 
@@ -1106,6 +1120,14 @@
       if (e.key !== "Enter") return;
       const t = parseTime(el.jump.value);
       if (t == null) return toast("格式：16:20 或 16:20:30");
+      if (!S.segs.length) return toast("先选一个有录像的日期");
+      if (indexAt(t) < 0) {
+        const j = nextAfter(t);
+        toast(j < 0
+          ? "这个时间点之后没有录像了"
+          : `这个时间点没有录像，下一段从 ${hms(S.segs[j].s)} 开始`, 2600);
+        return;
+      }
       seekTo(t, true);
       el.jump.blur();
     });
